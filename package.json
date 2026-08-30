@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "deploy": "npx @convex-dev/static-hosting deploy"
+    "deploy": "npx convex deploy -y && npx @convex-dev/static-hosting upload --build --prod",
+    "deploy:dev": "npx convex dev --once && npx @convex-dev/static-hosting upload --build"
   },
   "dependencies": {
     "@convex-dev/static-hosting": "^0.2.1",

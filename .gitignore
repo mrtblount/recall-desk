@@ -38,3 +38,6 @@ coverage/
 # claude code session state (skills are committed; worktrees and local settings are not)
 .claude/worktrees/
 .claude/settings.local.json
+
+# private operating brief for the coding agent (kept out of the public repo)
+.claude/handoff-prompt.md

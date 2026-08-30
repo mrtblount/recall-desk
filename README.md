@@ -4,7 +4,7 @@
 
 Built solo for the [Convex All Gas Hackathon](https://www.convex.dev/hackathons/all-gas), Aug 25 – Sep 22, 2026. Every line of code in this repo was written for this hackathon, starting Aug 30, 2026.
 
-- **Live:** _coming today_
+- **Live:** https://tremendous-bullfrog-311.convex.site
 - **Build log:** [hackathon.md](./hackathon.md)
 - **Demo video:** _coming Sep 17_
 
@@ -16,6 +16,17 @@ Built solo for the [Convex All Gas Hackathon](https://www.convex.dev/hackathons/
 - [OpenAI](https://openai.com) — receipt extraction, remedy-procedure extraction, match adjudication, claim drafting
 - Vite + React + TypeScript
 
+## Run it
+
+```bash
+npm install
+npx convex dev      # provisions/attaches a dev deployment and writes .env.local
+npm run dev         # Vite dev server
+npm run deploy      # build + deploy backend + upload static site to <deployment>.convex.site
+```
+
+Secrets live in `.env.local` (gitignored) and Convex environment variables. `.env.example` lists the names.
+
 ## Status
 
-Session 0 (Aug 30, 2026): repo initialized.
+Session 0 (Aug 30, 2026): repo initialized, Convex project provisioned, hello-world shell live on convex.site. Next: the public recall board.
