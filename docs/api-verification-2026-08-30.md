@@ -639,12 +639,12 @@ const match = response.output_parsed; // null on refusal/parse failure
 - [x] Static hosting switched from setup's component-owned `/api` mode to **app-owned root routing**: `defineApp()` + `app.use(staticHosting)`; `convex/http.ts` calls `registerStaticRoutes(http, components.staticHosting)` **last**.
 - [x] Verified on prod: `/` 200, SPA-fallback path 200, hashed assets `cache-control: public, max-age=31536000`.
 - [x] Generated `"deploy": "npx @convex-dev/static-hosting deploy"` rejected (non-TTY prompt crash: "Cannot prompt for input in non-interactive terminals"); replaced with `"deploy": "npx convex deploy -y && npx @convex-dev/static-hosting upload --build --prod"` and `"deploy:dev": "npx convex dev --once && npx @convex-dev/static-hosting upload --build"`.
-- [x] Favicon URL versioned (`/favicon.svg?v=2`) after an unpublished-path 404 was edge-cached (`public, max-age=14400`); rule adopted: never probe unpublished prod paths, version unhashed `public/` assets.
+- [x] Favicon URL versioned (`/favicon.svg?v=1`) after an unpublished-path 404 was edge-cached (`public, max-age=14400`); rule adopted: never probe unpublished prod paths, version unhashed `public/` assets.
 - [x] Convex health guideline applied: no `Date.now()` in queries.
 - [x] `npx convex ai-files install` run (CLAUDE.md, AGENTS.md, `.agents/skills`); Convex Claude Code plugin `convex@claude-plugins-official` 1.10.0 installed at user scope.
 - [x] OpenAI model names/prices carried as **re-verify at first use (M6)** only; model ids to live in env vars.
 - [ ] Register on Luma (gates Firecrawl credits); create the vibeapps account; note the Sep 22 12:00 PM PT deadline.
-- [ ] Curl the hackathon skill into `.claude/skills/convex-hackathon-skill/`, run `/hackathon start`, set Event `Convex All Gas Hackathon`, Frontend `Convex static hosting`, live app URL above.
+- [x] Hackathon skill curled into `.claude/skills/convex-hackathon-skill/`; `hackathon.md` initialized with Event `Convex All Gas Hackathon`, Frontend `Convex static hosting`, and the live app URL above.
 - [ ] `export CONVEX_ALLOW_ANONYMOUS=false` in the agent shell profile.
 - [ ] Register `firecrawl` (`httpPrefix: "/firecrawl/"`), `agentmail`, and three workpools via `app.use(...)`; run `npx convex dev --once` for codegen.
 - [ ] Set `FIRECRAWL_API_KEY`, `AGENTMAIL_API_KEY`, `AGENTMAIL_WEBHOOK_SECRET`, `OPENAI_API_KEY` on dev and (with `--prod`) prod.
