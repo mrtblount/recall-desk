@@ -22,8 +22,7 @@ export default function App() {
           <span>Connecting to Convex…</span>
         ) : (
           <span>
-            Backend live · {new Date(health.serverTime).toUTCString()} · build{" "}
-            <code>{health.build}</code>
+            Backend live · reactive query answered · build <code>{health.build}</code>
           </span>
         )}
       </div>
