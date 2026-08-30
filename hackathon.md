@@ -12,7 +12,7 @@
 - **Auth:** none
 - **AI models:** none
 - **Started:** 2026-08-30T06:30:40Z
-- **Last updated:** 2026-08-30T06:37:40Z
+- **Last updated:** 2026-08-30T06:39:31Z
 
 ## What this is
 
@@ -42,11 +42,11 @@ Secrets live in `.env.local` (gitignored) and in Convex environment variables (`
 
 ## Log
 
-### 2026-08-30 - 46df638
+### 2026-08-30 - 8e52a04
 Session 0 (milestone M1): repo, scaffold, Convex project, and a live URL. Shipped a public repo with MIT license and a hello-world shell that subscribes to a real Convex query (`convex/health.ts`, `src/App.tsx`), so the deploy proves the reactive stack end to end rather than just a static upload. Provisioned the Convex project non-interactively (`npx convex dev --once --configure new --team … --project recall-desk --dev-deployment cloud`), registered `@convex-dev/static-hosting` 0.2.1, and deployed to production on the first try. Convex features: queries, realtime queries (`useQuery`), HTTP actions (`convex/http.ts`), registered component (`convex/convex.config.ts`).
 
 Decisions: (1) switched static hosting from the setup command's default component-owned mode (`httpPrefix: "/api"`) to app-owned root routing — `registerStaticRoutes` is the last call in `convex/http.ts` — because Convex validates JWTs by fetching `/.well-known/openid-configuration` at the deployment root, and Convex Auth serves that route from the app's router; prefixing it under `/api` would have broken auth in a later session and moved the AgentMail webhook URL. (2) Removed a `Date.now()` read from the health query after reading Convex's generated guidelines (queries are cached and never re-run because time passes). (3) Ran `npx convex ai-files install`, which added Convex's agent guidelines and skills to the repo; the hackathon build-log skill lives in `.claude/skills`.
 
-Measured: production bundle 261.6 kB JS (79.9 kB gzip) + 1.4 kB CSS; `npx convex dev --once` pushes in ~1.3–1.5 s; static upload is 4 files; `/`, an SPA-fallback path, and hashed assets all return 200 on both the dev and prod `.convex.site` hosts, assets with `cache-control: public, max-age=31536000`. Broke: nothing blocking. npm 11 blocked esbuild's optional postinstall script (build unaffected); the global `convex` binary was stale (1.32) so the project pins `convex@1.45` locally.
+Measured: production bundle 261.6 kB JS (79.9 kB gzip) + 1.4 kB CSS; `npx convex dev --once` pushes in ~1.3–1.5 s; static upload is 4 files; `/`, an SPA-fallback path, and hashed assets all return 200 on both the dev and prod `.convex.site` hosts, assets with `cache-control: public, max-age=31536000`. Broke: (1) `npm run deploy` as written by the setup command failed in this non-interactive shell — the wrapper runs `convex deploy` without `-y`, and the CLI refuses to prompt ("Cannot prompt for input in non-interactive terminals") whenever `CONVEX_DEPLOYMENT` points at a dev deployment. Fixed by splitting the script into the two documented halves, `npx convex deploy -y && npx @convex-dev/static-hosting upload --build --prod`, plus a `deploy:dev` script for hosted smoke tests. (2) A probe of `/favicon.svg` on the prod host *before* the first publish returned a 404 that the component stamps with `cache-control: public, max-age=14400`, so the edge cached the miss for four hours; the same path with a query string served 200 immediately. Lesson for demo week: never request a prod path before it is published, and version unhashed `public/` assets (`/favicon.svg?v=1`). Minor: npm 11 blocked esbuild's optional postinstall script (build unaffected); the global `convex` binary was stale (1.32) so the project pins `convex@1.45` locally.
 
 Next: M2 — schema for the recall corpus, one manual CPSC crawl seeding `recalls`, and the public board rendering from a live query.
