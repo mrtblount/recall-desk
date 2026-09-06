@@ -8,8 +8,10 @@
  * @module
  */
 
+import type * as crawl_cpsc from "../crawl/cpsc.js";
 import type * as health from "../health.js";
 import type * as http from "../http.js";
+import type * as recalls from "../recalls.js";
 
 import type {
   ApiFromModules,
@@ -18,8 +20,10 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  "crawl/cpsc": typeof crawl_cpsc;
   health: typeof health;
   http: typeof http;
+  recalls: typeof recalls;
 }>;
 
 /**
