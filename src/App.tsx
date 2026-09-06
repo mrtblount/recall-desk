@@ -20,6 +20,14 @@ function formatDate(ts: number): string {
   });
 }
 
+/** CPSC NumberOfUnits strings can carry long parentheticals ("About 22,660
+ * (In addition, about 3,177 were sold in Canada)") — trim for the card label;
+ * the stored value stays source-faithful. */
+function unitsLabel(unitsText: string): string {
+  const trimmed = unitsText.replace(/\s*\(.*$/, "").trim();
+  return trimmed.length > 0 ? `${trimmed} units` : "";
+}
+
 function timeAgo(ts: number): string {
   const mins = Math.max(0, Math.round((Date.now() - ts) / 60000));
   if (mins < 1) return "just now";
@@ -43,7 +51,9 @@ function RecallCard({ recall }: { recall: Doc<"recalls"> }) {
           {recall.status === "expanded" && (
             <span className="chip chip-expanded">Expanded</span>
           )}
-          {recall.unitsText && <span className="units">{recall.unitsText} units</span>}
+          {recall.unitsText && unitsLabel(recall.unitsText) && (
+            <span className="units">{unitsLabel(recall.unitsText)}</span>
+          )}
         </p>
         <h2 className="card-title">
           <a href={recall.url} target="_blank" rel="noopener noreferrer">
