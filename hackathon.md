@@ -8,11 +8,11 @@
 - **Frontend:** Convex static hosting
 - **Convex deployment:** https://tremendous-bullfrog-311.convex.cloud
 - **Components:** @convex-dev/static-hosting
-- **Convex features:** queries, realtime queries, HTTP actions
+- **Convex features:** schema, tables, indexes, full-text search index, queries, mutations, actions, internal functions, paginated queries, realtime queries, HTTP actions, tests (convex-test)
 - **Auth:** none
 - **AI models:** none
 - **Started:** 2026-08-30T06:30:40Z
-- **Last updated:** 2026-08-30T07:32:36Z
+- **Last updated:** 2026-09-06T19:41:28Z
 
 ## What this is
 
@@ -52,3 +52,10 @@ Measured: production bundle 261.6 kB JS (79.9 kB gzip) + 1.4 kB CSS; `npx convex
 Docs verification: before trusting any API note in the planning brief, a 13-agent research pass re-read the live docs for the hackathon rules, Convex CLI, static hosting, Convex Auth v1, the Firecrawl and AgentMail components, workpool/crons, and OpenAI structured outputs, with an adversarial second pass on the four decision-critical topics (227 claims confirmed, 2 refuted, 5 unverifiable). The consolidated note is `docs/api-verification-2026-08-30.md`. Headline corrections to the plan: the AgentMail free plan allows three inboxes total, so receipts will route through one shared inbox by sender address instead of one inbox per user; Firecrawl's `maxAge` defaults to two days and cached hits still cost credits, so change detection must set `maxAge: 0` or use `changeTracking`; CPSC exposes a JSON recall API alongside the HTML pages.
 
 Next: M2 — schema for the recall corpus, one manual CPSC crawl seeding `recalls`, and the public board rendering from a live query.
+
+### 2026-09-06 - e16a6a8
+Session M2: the public board is real. Shipped the corpus schema (`convex/schema.ts`: feedSources, recalls with idempotency/board/search indexes, recallRevisions, remedyPages, publicStats, llmUsage), a CPSC seed pipeline (`convex/crawl/cpsc.ts` fetches the SaferProducts JSON API — response shape verified live first — maps defensively with unknown-narrowing and UTC-pinned dates, sha-256 contentHash, batches of 40), an idempotent upsert (`convex/recalls.ts`: insert / touch / archive-then-replace keyed on [source, sourceId], ticker counters maintained in the same mutation), public paginated `recentRecalls` + `stats` queries, and the live board UI (stats ticker, recall cards with real product photos, load-more, dark scheme). Production seeded with **193 real CPSC recalls**; a convex-test suite (4 tests: idempotent re-crawl, change-archives-revision, optional-field clearing, pagination order) runs green in ~0.3 s. Lane B tables (users/items/matches/claims) land with auth since they need `Id<"users">`.
+
+Before deploying, a 33-agent adversarial review (3 find lenses → 2 skeptics per finding) confirmed 9 findings and refuted 6. The catch of the day: the content-change branch used `ctx.db.patch`, and Convex strips `undefined` args — so an optional field the source removed (a withdrawn product photo, a changed contact) could never be cleared while the stored contentHash claimed sync, permanently and silently. Fixed with archive-then-`ctx.db.replace`, plus: revision rows now archive the superseded version's full snapshot (diff source data for the change-tracking showcase), the crawl window now uses `LastPublishDateStart` after a live probe showed 15 of 46 recently republished records carry RecallDates outside a `RecallDateStart` window (one from 1998 — updates to old recalls would never re-enter), a "units units" label bug on real corpus strings, a freezing "updated N min ago" ticker (30 s tick), and a meta description that overclaimed unshipped features. The wider window alone grew the corpus 165 → 193.
+
+Next: M3 — the Firecrawl component, the CPSC cron on `feedSources`, and recall-detail scrapes.
