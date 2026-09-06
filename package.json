@@ -9,7 +9,8 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "deploy": "npx convex deploy -y && npx @convex-dev/static-hosting upload --build --prod",
-    "deploy:dev": "npx convex dev --once && npx @convex-dev/static-hosting upload --build"
+    "deploy:dev": "npx convex dev --once && npx @convex-dev/static-hosting upload --build",
+    "test": "vitest run"
   },
   "dependencies": {
     "@convex-dev/static-hosting": "^0.2.1",
@@ -18,12 +19,15 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@edge-runtime/vm": "^5.0.0",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.1.0",
+    "convex-test": "^0.0.56",
     "oxlint": "^1.79.0",
     "typescript": "~6.0.2",
-    "vite": "^8.2.2"
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0"
   }
 }

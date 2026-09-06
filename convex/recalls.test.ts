@@ -1,0 +1,87 @@
+/// <reference types="vite/client" />
+import { convexTest } from "convex-test";
+import { expect, test } from "vitest";
+import { api, internal } from "./_generated/api";
+import schema from "./schema";
+
+const modules = import.meta.glob("./**/*.ts");
+
+function doc(overrides: Record<string, unknown> = {}) {
+  return {
+    source: "cpsc" as const,
+    sourceId: "10949",
+    url: "https://cpsc.gov/Recalls/2026/example",
+    title: "Example Product Recalled Due to Hazard",
+    description: "This recall involves the example product.",
+    brandNames: ["Acme Co."],
+    productDesc: "Acme Example Product (model X1)",
+    upcs: ["012345678905"],
+    hazard: "Example hazard.",
+    remedySummary: "Stop using and contact Acme.",
+    remedyOptions: ["Refund"],
+    publishedAt: 1_700_000_000_000,
+    contentHash: "hash-a",
+    ...overrides,
+  };
+}
+
+test("upsert is idempotent: re-crawling the same content changes nothing", async () => {
+  const t = convexTest(schema, modules);
+  const first = await t.mutation(internal.recalls.upsertBatchFromCrawl, {
+    docs: [doc()],
+  });
+  expect(first).toMatchObject({ inserted: 1, updated: 0, unchanged: 0 });
+  const second = await t.mutation(internal.recalls.upsertBatchFromCrawl, {
+    docs: [doc()],
+  });
+  expect(second).toMatchObject({ inserted: 0, updated: 0, unchanged: 1 });
+  const stats = await t.query(api.recalls.stats, {});
+  expect(stats.recallsTracked).toBe(1);
+  const rows = await t.run(async (ctx) => await ctx.db.query("recalls").collect());
+  expect(rows).toHaveLength(1);
+});
+
+test("content change patches the recall and writes a revision row", async () => {
+  const t = convexTest(schema, modules);
+  await t.mutation(internal.recalls.upsertBatchFromCrawl, { docs: [doc()] });
+  const changed = doc({
+    title: "Example Product Recall EXPANDED to More Units",
+    contentHash: "hash-b",
+  });
+  const result = await t.mutation(internal.recalls.upsertBatchFromCrawl, {
+    docs: [changed],
+  });
+  expect(result).toMatchObject({ inserted: 0, updated: 1, unchanged: 0 });
+  const rows = await t.run(async (ctx) => await ctx.db.query("recalls").collect());
+  expect(rows).toHaveLength(1);
+  expect(rows[0].title).toBe("Example Product Recall EXPANDED to More Units");
+  expect(rows[0].contentHash).toBe("hash-b");
+  const revisions = await t.run(
+    async (ctx) => await ctx.db.query("recallRevisions").collect(),
+  );
+  expect(revisions).toHaveLength(1);
+  expect(revisions[0].contentHash).toBe("hash-b");
+  const stats = await t.query(api.recalls.stats, {});
+  expect(stats.recallsTracked).toBe(1);
+});
+
+test("recentRecalls pages newest first", async () => {
+  const t = convexTest(schema, modules);
+  await t.mutation(internal.recalls.upsertBatchFromCrawl, {
+    docs: [
+      doc({ sourceId: "1", publishedAt: 1_000, contentHash: "h1" }),
+      doc({ sourceId: "2", publishedAt: 3_000, contentHash: "h2" }),
+      doc({ sourceId: "3", publishedAt: 2_000, contentHash: "h3" }),
+    ],
+  });
+  const page1 = await t.query(api.recalls.recentRecalls, {
+    paginationOpts: { numItems: 2, cursor: null },
+  });
+  expect(page1.page.map((r) => r.publishedAt)).toEqual([3_000, 2_000]);
+  expect(page1.isDone).toBe(false);
+  const page2 = await t.query(api.recalls.recentRecalls, {
+    paginationOpts: { numItems: 2, cursor: page1.continueCursor },
+  });
+  expect(page2.page.map((r) => r.publishedAt)).toEqual([1_000]);
+  expect(page2.isDone).toBe(true);
+});
