@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { usePaginatedQuery, useQuery } from "convex/react";
 import { api } from "../convex/_generated/api";
 import type { Doc } from "../convex/_generated/dataModel";
@@ -25,11 +26,16 @@ function formatDate(ts: number): string {
  * the stored value stays source-faithful. */
 function unitsLabel(unitsText: string): string {
   const trimmed = unitsText.replace(/\s*\(.*$/, "").trim();
-  return trimmed.length > 0 ? `${trimmed} units` : "";
+  if (trimmed.length === 0) return "";
+  // Append "units" only to bare quantities — CPSC strings sometimes carry
+  // their own noun ("About 2,850 units", "About 3,100 pounds").
+  return /^(about|approximately)?[\s\d.,]*\d\s*(million|billion)?$/i.test(trimmed)
+    ? `${trimmed} units`
+    : trimmed;
 }
 
-function timeAgo(ts: number): string {
-  const mins = Math.max(0, Math.round((Date.now() - ts) / 60000));
+function timeAgo(ts: number, now: number): string {
+  const mins = Math.max(0, Math.round((now - ts) / 60000));
   if (mins < 1) return "just now";
   if (mins < 60) return `${mins} min ago`;
   const hours = Math.round(mins / 60);
@@ -91,6 +97,13 @@ function RecallCard({ recall }: { recall: Doc<"recalls"> }) {
 
 export default function App() {
   const stats = useQuery(api.recalls.stats);
+  // Tick so "corpus updated N min ago" cannot freeze at its mount-time value
+  // in an open tab — exactly when crawls stop is when freshness matters.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
   const { results, status, loadMore } = usePaginatedQuery(
     api.recalls.recentRecalls,
     {},
@@ -116,7 +129,7 @@ export default function App() {
         <span className="tick-sep" aria-hidden="true" />
         <span>
           corpus updated{" "}
-          <strong>{stats?.lastCrawlAt ? timeAgo(stats.lastCrawlAt) : "—"}</strong>
+          <strong>{stats?.lastCrawlAt ? timeAgo(stats.lastCrawlAt, now) : "—"}</strong>
         </span>
         <span className="tick-sep" aria-hidden="true" />
         <span>

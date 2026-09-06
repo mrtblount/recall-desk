@@ -67,11 +67,15 @@ export default defineSchema({
       filterFields: ["source", "status"],
     }),
 
-  /** One row per detected content change of a recall (M4 diff showcase). */
+  /** One row per detected content change of a recall. Each row ARCHIVES the
+   * superseded version (its hash + full content snapshot) so the M4 diff
+   * showcase can reconstruct what changed even though the recalls row was
+   * replaced in the same mutation. */
   recallRevisions: defineTable({
     recallId: v.id("recalls"),
     crawledAt: v.number(),
     contentHash: v.string(),
+    snapshot: v.optional(recallDoc.omit("lastSeenAt", "status")),
     diffSummary: v.optional(v.string()),
   }).index("by_recallId", ["recallId"]),
 

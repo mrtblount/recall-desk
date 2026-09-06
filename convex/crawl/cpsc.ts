@@ -140,7 +140,12 @@ export const seedFromApi = internalAction({
     if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) {
       throw new Error(`since must be YYYY-MM-DD, got: ${since}`);
     }
-    const res = await fetch(`${API_BASE}&RecallDateStart=${since}`);
+    // Window on LAST PUBLISH date, not recall date: CPSC republishes old
+    // recalls when they change (verified live 2026-09-06: 46 records
+    // republished in a two-week window, 15 of them with RecallDates outside
+    // it, one from 1998) — a RecallDateStart window would never see those
+    // updates and the rows would go permanently stale.
+    const res = await fetch(`${API_BASE}&LastPublishDateStart=${since}`);
     if (!res.ok) {
       throw new Error(`CPSC API returned ${res.status}`);
     }
@@ -178,7 +183,7 @@ export const seedFromApi = internalAction({
       unchanged += result.unchanged;
     }
     console.log(
-      `CPSC seed since ${since}: fetched=${json.length} skipped=${skipped} inserted=${inserted} updated=${updated} unchanged=${unchanged}`,
+      `CPSC seed (published since ${since}): fetched=${json.length} skipped=${skipped} inserted=${inserted} updated=${updated} unchanged=${unchanged}`,
     );
     return { fetched: json.length, skipped, inserted, updated, unchanged };
   },

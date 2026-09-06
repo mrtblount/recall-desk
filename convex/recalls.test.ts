@@ -60,9 +60,32 @@ test("content change patches the recall and writes a revision row", async () => 
     async (ctx) => await ctx.db.query("recallRevisions").collect(),
   );
   expect(revisions).toHaveLength(1);
-  expect(revisions[0].contentHash).toBe("hash-b");
+  // The revision archives the SUPERSEDED version, not the new one.
+  expect(revisions[0].contentHash).toBe("hash-a");
+  expect(revisions[0].snapshot?.title).toBe(
+    "Example Product Recalled Due to Hazard",
+  );
   const stats = await t.query(api.recalls.stats, {});
   expect(stats.recallsTracked).toBe(1);
+});
+
+test("a re-crawl that drops an optional field clears it (replace, not patch)", async () => {
+  const t = convexTest(schema, modules);
+  await t.mutation(internal.recalls.upsertBatchFromCrawl, {
+    docs: [doc({ imageUrl: "https://cpsc.gov/old.jpg", imageCaption: "Old photo" })],
+  });
+  await t.mutation(internal.recalls.upsertBatchFromCrawl, {
+    docs: [doc({ title: "Republished without a photo", contentHash: "hash-b" })],
+  });
+  const rows = await t.run(async (ctx) => await ctx.db.query("recalls").collect());
+  expect(rows).toHaveLength(1);
+  expect(rows[0].title).toBe("Republished without a photo");
+  expect(rows[0].imageUrl).toBeUndefined();
+  expect(rows[0].imageCaption).toBeUndefined();
+  const revisions = await t.run(
+    async (ctx) => await ctx.db.query("recallRevisions").collect(),
+  );
+  expect(revisions[0].snapshot?.imageUrl).toBe("https://cpsc.gov/old.jpg");
 });
 
 test("recentRecalls pages newest first", async () => {

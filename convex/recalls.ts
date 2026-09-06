@@ -13,7 +13,10 @@ export const crawlInput = recallDoc.omit("lastSeenAt", "status");
  * Idempotent upsert keyed on [source, sourceId]:
  * - new recall            -> insert (status "active") and bump the ticker
  * - same contentHash      -> touch lastSeenAt only
- * - different contentHash -> patch content + write a recallRevisions row
+ * - different contentHash -> archive the prior version to recallRevisions,
+ *   then REPLACE the row. Replace, not patch: undefined optional args are
+ *   stripped in transit, so patch could never clear a field the source
+ *   removed — the row would diverge from its own contentHash forever.
  * Stats are maintained in this same mutation so they can never drift.
  */
 export const upsertBatchFromCrawl = internalMutation({
@@ -46,14 +49,23 @@ export const upsertBatchFromCrawl = internalMutation({
         await ctx.db.patch("recalls", existing._id, { lastSeenAt: now });
         unchanged++;
       } else {
-        await ctx.db.patch("recalls", existing._id, {
-          ...doc,
-          lastSeenAt: now,
-        });
+        const {
+          _id,
+          _creationTime,
+          lastSeenAt: _lastSeenAt,
+          status: _status,
+          ...prior
+        } = existing;
         await ctx.db.insert("recallRevisions", {
           recallId: existing._id,
           crawledAt: now,
-          contentHash: doc.contentHash,
+          contentHash: existing.contentHash,
+          snapshot: prior,
+        });
+        await ctx.db.replace("recalls", existing._id, {
+          ...doc,
+          lastSeenAt: now,
+          status: existing.status,
         });
         updated++;
       }
