@@ -7,12 +7,12 @@
 - **Repo:** https://github.com/mrtblount/recall-desk
 - **Frontend:** Convex static hosting
 - **Convex deployment:** https://tremendous-bullfrog-311.convex.cloud
-- **Components:** @convex-dev/static-hosting
-- **Convex features:** schema, tables, indexes, full-text search index, queries, mutations, actions, internal functions, paginated queries, realtime queries, HTTP actions, tests (convex-test)
+- **Components:** @convex-dev/static-hosting, @firecrawl/firecrawl-convex, @convex-dev/workpool (crawlPool)
+- **Convex features:** schema, tables, indexes, full-text search index, queries, mutations, actions, internal functions, paginated queries, realtime queries, HTTP actions, crons, scheduled functions (workpool), components, tests (convex-test)
 - **Auth:** none
 - **AI models:** none
 - **Started:** 2026-08-30T06:30:40Z
-- **Last updated:** 2026-09-06T19:41:28Z
+- **Last updated:** 2026-09-07T00:30:03Z
 
 ## What this is
 
@@ -59,3 +59,10 @@ Session M2: the public board is real. Shipped the corpus schema (`convex/schema.
 Before deploying, a 33-agent adversarial review (3 find lenses → 2 skeptics per finding) confirmed 9 findings and refuted 6. The catch of the day: the content-change branch used `ctx.db.patch`, and Convex strips `undefined` args — so an optional field the source removed (a withdrawn product photo, a changed contact) could never be cleared while the stored contentHash claimed sync, permanently and silently. Fixed with archive-then-`ctx.db.replace`, plus: revision rows now archive the superseded version's full snapshot (diff source data for the change-tracking showcase), the crawl window now uses `LastPublishDateStart` after a live probe showed 15 of 46 recently republished records carry RecallDates outside a `RecallDateStart` window (one from 1998 — updates to old recalls would never re-enter), a "units units" label bug on real corpus strings, a freezing "updated N min ago" ticker (30 s tick), and a meta description that overclaimed unshipped features. The wider window alone grew the corpus 165 → 193.
 
 Next: M3 — the Firecrawl component, the CPSC cron on `feedSources`, and recall-detail scrapes.
+
+### 2026-09-06 - effc709
+Session M3: the corpus updates itself. Registered the Firecrawl component (webhook route mounted at `/firecrawl/` — verified it coexists with the static site's GET catch-all) and a `crawlPool` workpool capped at 2 parallel scrapes to match Firecrawl's free-tier concurrency. A single cron ("crawl recall feeds", every 2 h) drives a data-driven `feedSources` registry, so FDA/FSIS in the next session are a registry row plus a handler, not new crons. Each feed run fetches the CPSC listing window, upserts idempotently, and — inside the same mutation transaction as the hash writes — enqueues a fresh (`maxAge: 0`) Firecrawl detail scrape for every changed recall. The detail scrape extracts the manufacturer's remedy-portal URL, which the JSON listing does not carry and the claim flow later depends on; extraction is a pure, unit-tested module (10 tests) that requires positive remedy evidence and returns null honestly. Verified on production: the deploy-time cron tick self-seeded the registry and ran the feed with no manual action (registry row created and `lastCrawledAt` stamped 19 ms apart), which is this milestone's done-means.
+
+Live data QA caught the first extraction heuristic red-handed: on pre-2010 press-release pages (pulled in by the publish-date window) it returned CPSC page chrome — first AddToAny share links whose URLs embed the recall title, then the Threads profile. The fix was structural, not a longer blocklist: a minimum-evidence score, plus scrapes that always report so a null CLEARS a previously stored bogus or withdrawn link. Re-verified: three modern recalls extract their real portals (a recallrtr.com claim page, a dedicated skiphoprecall.com site, a retailer recall list); ten old press releases correctly cleared to none. A 22-agent adversarial review then confirmed four more defects before deploy: an unseeded registry that would have made every prod cron tick a silent no-op, change-triggered re-scrapes served from Firecrawl's 2-day cache (the exact rows flagged as changed), non-atomic hash-write/enqueue, and a non-converging backfill — all fixed, with `detailScrapedAt` now marking scraped rows. Measured: cron pipeline on dev ran fetched=35 → inserted=11 → 11 scrapes → 10 remedy URLs; free-tier rate limit observed at 429 with 26 req/min consumed, which is why the pool paces at 2.
+
+Next: M4 — FDA + FSIS feeds in the registry, hash-diff revisions surfaced, and the "expanded" badge.
