@@ -3,7 +3,8 @@ import {
   paginationResultValidator,
 } from "convex/server";
 import { v } from "convex/values";
-import { internalMutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, query } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import schema, { recallDoc, vSource } from "./schema";
 
 /** What a crawl produces: everything except the server-stamped fields. */
@@ -25,11 +26,13 @@ export const upsertBatchFromCrawl = internalMutation({
     inserted: v.number(),
     updated: v.number(),
     unchanged: v.number(),
+    changedIds: v.array(v.id("recalls")),
   }),
   handler: async (ctx, args) => {
     let inserted = 0;
     let updated = 0;
     let unchanged = 0;
+    const changedIds: Array<Id<"recalls">> = [];
     const now = Date.now();
     for (const doc of args.docs) {
       const existing = await ctx.db
@@ -39,11 +42,12 @@ export const upsertBatchFromCrawl = internalMutation({
         )
         .unique();
       if (existing === null) {
-        await ctx.db.insert("recalls", {
+        const id = await ctx.db.insert("recalls", {
           ...doc,
           lastSeenAt: now,
           status: "active",
         });
+        changedIds.push(id);
         inserted++;
       } else if (existing.contentHash === doc.contentHash) {
         await ctx.db.patch("recalls", existing._id, { lastSeenAt: now });
@@ -64,9 +68,14 @@ export const upsertBatchFromCrawl = internalMutation({
         });
         await ctx.db.replace("recalls", existing._id, {
           ...doc,
+          // remedyUrl is enrichment from the Firecrawl detail scrape, not an
+          // API field — preserve it through content replaces; the re-enqueued
+          // detail scrape refreshes it if the notice changed.
+          remedyUrl: doc.remedyUrl ?? existing.remedyUrl,
           lastSeenAt: now,
           status: existing.status,
         });
+        changedIds.push(existing._id);
         updated++;
       }
     }
@@ -84,7 +93,45 @@ export const upsertBatchFromCrawl = internalMutation({
         lastCrawlAt: now,
       });
     }
-    return { inserted, updated, unchanged };
+    return { inserted, updated, unchanged, changedIds };
+  },
+});
+
+export const getById = internalQuery({
+  args: { id: v.id("recalls") },
+  returns: v.union(schema.doc("recalls"), v.null()),
+  handler: async (ctx, args) => await ctx.db.get("recalls", args.id),
+});
+
+/** Written by the Firecrawl detail scrape (convex/crawl/detail.ts). */
+export const enrichFromDetail = internalMutation({
+  args: { recallId: v.id("recalls"), remedyUrl: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const recall = await ctx.db.get("recalls", args.recallId);
+    if (recall === null) return null;
+    if (recall.remedyUrl !== args.remedyUrl) {
+      await ctx.db.patch("recalls", args.recallId, {
+        remedyUrl: args.remedyUrl,
+      });
+    }
+    return null;
+  },
+});
+
+/** Backfill helper: recalls not yet enriched, newest first, bounded. */
+export const idsMissingRemedyUrl = internalQuery({
+  args: { limit: v.number() },
+  returns: v.array(v.id("recalls")),
+  handler: async (ctx, args) => {
+    const limit = Math.min(Math.max(1, args.limit), 300);
+    const out: Array<Id<"recalls">> = [];
+    const rows = ctx.db.query("recalls").withIndex("by_publishedAt").order("desc");
+    for await (const row of rows) {
+      if (row.remedyUrl === undefined) out.push(row._id);
+      if (out.length >= limit) break;
+    }
+    return out;
   },
 });
 

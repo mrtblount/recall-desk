@@ -1,9 +1,10 @@
 import { v, type Infer } from "convex/values";
 import { internal } from "../_generated/api";
-import { internalAction } from "../_generated/server";
+import { internalAction, type ActionCtx } from "../_generated/server";
+import type { Id } from "../_generated/dataModel";
 import { crawlInput } from "../recalls";
 
-type CrawlDoc = Infer<typeof crawlInput>;
+export type CrawlDoc = Infer<typeof crawlInput>;
 
 const API_BASE = "https://www.saferproducts.gov/RestWebServices/Recall?format=json";
 const BATCH_SIZE = 40;
@@ -120,9 +121,72 @@ function mapRecall(rec: Record<string, unknown>): Omit<CrawlDoc, "contentHash"> 
 }
 
 /**
- * M2 manual seed / M3 cron target: fetch the CPSC SaferProducts JSON API
- * (the structured listing source; Firecrawl owns detail pages, agencies
- * without JSON feeds, and remedy portals) and upsert idempotently.
+ * Fetch + map one CPSC listing window. Shared by the manual seed action and
+ * the cron-driven feeds runner (convex/crawl/feeds.ts).
+ */
+export async function fetchAndMapCpsc(
+  since: string,
+): Promise<{ fetched: number; skipped: number; docs: CrawlDoc[] }> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) {
+    throw new Error(`since must be YYYY-MM-DD, got: ${since}`);
+  }
+  // Window on LAST PUBLISH date, not recall date: CPSC republishes old
+  // recalls when they change (verified live 2026-09-06: 15 of 46 records
+  // republished in a two-week window had RecallDates outside it).
+  const res = await fetch(`${API_BASE}&LastPublishDateStart=${since}`);
+  if (!res.ok) {
+    throw new Error(`CPSC API returned ${res.status}`);
+  }
+  const json: unknown = await res.json();
+  if (!Array.isArray(json)) {
+    throw new Error("CPSC API: expected a JSON array");
+  }
+  const docs: CrawlDoc[] = [];
+  let skipped = 0;
+  for (const raw of json) {
+    if (typeof raw !== "object" || raw === null) {
+      skipped++;
+      continue;
+    }
+    const mapped = mapRecall(raw as Record<string, unknown>);
+    if (mapped === null) {
+      skipped++;
+      continue;
+    }
+    // Key order is fixed by the mapper's literal, so stringify is stable.
+    docs.push({ ...mapped, contentHash: await sha256Hex(JSON.stringify(mapped)) });
+  }
+  return { fetched: json.length, skipped, docs };
+}
+
+/** Upsert mapped docs in bounded batches; returns totals + changed row ids. */
+export async function upsertInBatches(
+  ctx: ActionCtx,
+  docs: CrawlDoc[],
+): Promise<{
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  changedIds: Id<"recalls">[];
+}> {
+  let inserted = 0;
+  let updated = 0;
+  let unchanged = 0;
+  const changedIds: Id<"recalls">[] = [];
+  for (let i = 0; i < docs.length; i += BATCH_SIZE) {
+    const result = await ctx.runMutation(internal.recalls.upsertBatchFromCrawl, {
+      docs: docs.slice(i, i + BATCH_SIZE),
+    });
+    inserted += result.inserted;
+    updated += result.updated;
+    unchanged += result.unchanged;
+    changedIds.push(...result.changedIds);
+  }
+  return { inserted, updated, unchanged, changedIds };
+}
+
+/**
+ * Manual seed (M2) — same pipeline the cron drives, arbitrary window.
  */
 export const seedFromApi = internalAction({
   args: { since: v.optional(v.string()) },
@@ -137,54 +201,17 @@ export const seedFromApi = internalAction({
     const since =
       args.since ??
       new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) {
-      throw new Error(`since must be YYYY-MM-DD, got: ${since}`);
-    }
-    // Window on LAST PUBLISH date, not recall date: CPSC republishes old
-    // recalls when they change (verified live 2026-09-06: 46 records
-    // republished in a two-week window, 15 of them with RecallDates outside
-    // it, one from 1998) — a RecallDateStart window would never see those
-    // updates and the rows would go permanently stale.
-    const res = await fetch(`${API_BASE}&LastPublishDateStart=${since}`);
-    if (!res.ok) {
-      throw new Error(`CPSC API returned ${res.status}`);
-    }
-    const json: unknown = await res.json();
-    if (!Array.isArray(json)) {
-      throw new Error("CPSC API: expected a JSON array");
-    }
-
-    const docs: CrawlDoc[] = [];
-    let skipped = 0;
-    for (const raw of json) {
-      if (typeof raw !== "object" || raw === null) {
-        skipped++;
-        continue;
-      }
-      const mapped = mapRecall(raw as Record<string, unknown>);
-      if (mapped === null) {
-        skipped++;
-        continue;
-      }
-      // Key order is fixed by the mapper's literal, so stringify is stable.
-      docs.push({ ...mapped, contentHash: await sha256Hex(JSON.stringify(mapped)) });
-    }
-
-    let inserted = 0;
-    let updated = 0;
-    let unchanged = 0;
-    for (let i = 0; i < docs.length; i += BATCH_SIZE) {
-      const result: { inserted: number; updated: number; unchanged: number } =
-        await ctx.runMutation(internal.recalls.upsertBatchFromCrawl, {
-          docs: docs.slice(i, i + BATCH_SIZE),
-        });
-      inserted += result.inserted;
-      updated += result.updated;
-      unchanged += result.unchanged;
-    }
+    const { fetched, skipped, docs } = await fetchAndMapCpsc(since);
+    const totals = await upsertInBatches(ctx, docs);
     console.log(
-      `CPSC seed (published since ${since}): fetched=${json.length} skipped=${skipped} inserted=${inserted} updated=${updated} unchanged=${unchanged}`,
+      `CPSC seed (published since ${since}): fetched=${fetched} skipped=${skipped} inserted=${totals.inserted} updated=${totals.updated} unchanged=${totals.unchanged}`,
     );
-    return { fetched: json.length, skipped, inserted, updated, unchanged };
+    return {
+      fetched,
+      skipped,
+      inserted: totals.inserted,
+      updated: totals.updated,
+      unchanged: totals.unchanged,
+    };
   },
 });

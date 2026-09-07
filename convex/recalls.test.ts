@@ -100,11 +100,11 @@ test("recentRecalls pages newest first", async () => {
   const page1 = await t.query(api.recalls.recentRecalls, {
     paginationOpts: { numItems: 2, cursor: null },
   });
-  expect(page1.page.map((r) => r.publishedAt)).toEqual([3_000, 2_000]);
+  expect(page1.page.map((r: { publishedAt: number }) => r.publishedAt)).toEqual([3_000, 2_000]);
   expect(page1.isDone).toBe(false);
   const page2 = await t.query(api.recalls.recentRecalls, {
     paginationOpts: { numItems: 2, cursor: page1.continueCursor },
   });
-  expect(page2.page.map((r) => r.publishedAt)).toEqual([1_000]);
+  expect(page2.page.map((r: { publishedAt: number }) => r.publishedAt)).toEqual([1_000]);
   expect(page2.isDone).toBe(true);
 });
