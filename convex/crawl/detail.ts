@@ -18,19 +18,21 @@ export const MAX_DETAIL_SCRAPES_PER_RUN = 300;
  * the SaferProducts JSON API does not carry it). Runs on crawlPool.
  */
 export const scrapeRecallDetail = internalAction({
-  args: { recallId: v.id("recalls") },
+  args: { recallId: v.id("recalls"), fresh: v.optional(v.boolean()) },
   returns: v.object({ remedyUrlFound: v.boolean() }),
   handler: async (ctx, args) => {
     const recall = await ctx.runQuery(internal.recalls.getById, {
       id: args.recallId,
     });
     if (recall === null) return { remedyUrlFound: false };
-    // Enrichment scrape: Firecrawl's default cache (2 days) is fine here and
-    // saves credits; change DETECTION (M4) uses changeTracking instead.
+    // fresh: change-triggered re-scrapes MUST bypass Firecrawl's 2-day
+    // default cache — the change is exactly why the cached copy is stale.
+    // Backfill keeps the default cache to save credits.
     const doc = await firecrawl.scrape(ctx, recall.url, {
       formats: ["markdown"],
       onlyMainContent: true,
       timeout: 60_000,
+      ...(args.fresh === true ? { maxAge: 0 } : {}),
     });
     const raw: unknown = doc;
     let markdown = "";

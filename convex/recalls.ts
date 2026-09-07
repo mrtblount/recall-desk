@@ -4,11 +4,17 @@ import {
 } from "convex/server";
 import { v } from "convex/values";
 import { internalMutation, internalQuery, query } from "./_generated/server";
+import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import { crawlPool } from "./pools";
 import schema, { recallDoc, vSource } from "./schema";
 
 /** What a crawl produces: everything except the server-stamped fields. */
-export const crawlInput = recallDoc.omit("lastSeenAt", "status");
+export const crawlInput = recallDoc.omit(
+  "lastSeenAt",
+  "status",
+  "detailScrapedAt",
+);
 
 /**
  * Idempotent upsert keyed on [source, sourceId]:
@@ -21,19 +27,40 @@ export const crawlInput = recallDoc.omit("lastSeenAt", "status");
  * Stats are maintained in this same mutation so they can never drift.
  */
 export const upsertBatchFromCrawl = internalMutation({
-  args: { docs: v.array(crawlInput) },
+  args: {
+    docs: v.array(crawlInput),
+    // Max fresh detail scrapes to enqueue IN THIS TRANSACTION for changed
+    // rows. Enqueueing here (workpool's primary pattern) makes the hash
+    // write and the scrape enqueue atomic — an action dying between the two
+    // could otherwise orphan changed rows from enrichment forever.
+    maxDetailScrapes: v.optional(v.number()),
+  },
   returns: v.object({
     inserted: v.number(),
     updated: v.number(),
     unchanged: v.number(),
     changedIds: v.array(v.id("recalls")),
+    detailScrapesEnqueued: v.number(),
   }),
   handler: async (ctx, args) => {
     let inserted = 0;
     let updated = 0;
     let unchanged = 0;
     const changedIds: Array<Id<"recalls">> = [];
+    let detailScrapesEnqueued = 0;
+    const maxDetailScrapes = args.maxDetailScrapes ?? 0;
     const now = Date.now();
+    const enqueueScrape = async (recallId: Id<"recalls">) => {
+      if (detailScrapesEnqueued >= maxDetailScrapes) return;
+      await crawlPool.enqueueAction(
+        ctx,
+        internal.crawl.detail.scrapeRecallDetail,
+        // fresh: a change was just detected, so any cached copy is stale by
+        // construction.
+        { recallId, fresh: true },
+      );
+      detailScrapesEnqueued++;
+    };
     for (const doc of args.docs) {
       const existing = await ctx.db
         .query("recalls")
@@ -48,6 +75,7 @@ export const upsertBatchFromCrawl = internalMutation({
           status: "active",
         });
         changedIds.push(id);
+        await enqueueScrape(id);
         inserted++;
       } else if (existing.contentHash === doc.contentHash) {
         await ctx.db.patch("recalls", existing._id, { lastSeenAt: now });
@@ -76,6 +104,7 @@ export const upsertBatchFromCrawl = internalMutation({
           status: existing.status,
         });
         changedIds.push(existing._id);
+        await enqueueScrape(existing._id);
         updated++;
       }
     }
@@ -93,7 +122,7 @@ export const upsertBatchFromCrawl = internalMutation({
         lastCrawlAt: now,
       });
     }
-    return { inserted, updated, unchanged, changedIds };
+    return { inserted, updated, unchanged, changedIds, detailScrapesEnqueued };
   },
 });
 
@@ -113,14 +142,17 @@ export const enrichFromDetail = internalMutation({
     const recall = await ctx.db.get("recalls", args.recallId);
     if (recall === null) return null;
     const next = args.remedyUrl ?? undefined;
-    if (recall.remedyUrl !== next) {
-      await ctx.db.patch("recalls", args.recallId, { remedyUrl: next });
-    }
+    await ctx.db.patch("recalls", args.recallId, {
+      remedyUrl: next,
+      detailScrapedAt: Date.now(),
+    });
     return null;
   },
 });
 
-/** Backfill helper: recalls not yet enriched, newest first, bounded. */
+/** Backfill helper: recalls never detail-scraped, newest first, bounded.
+ * Keyed on detailScrapedAt (not remedyUrl) so pages that legitimately have
+ * no manufacturer link are not re-scraped on every backfill run. */
 export const idsMissingRemedyUrl = internalQuery({
   args: { limit: v.number() },
   returns: v.array(v.id("recalls")),
@@ -129,7 +161,7 @@ export const idsMissingRemedyUrl = internalQuery({
     const out: Array<Id<"recalls">> = [];
     const rows = ctx.db.query("recalls").withIndex("by_publishedAt").order("desc");
     for await (const row of rows) {
-      if (row.remedyUrl === undefined) out.push(row._id);
+      if (row.detailScrapedAt === undefined) out.push(row._id);
       if (out.length >= limit) break;
     }
     return out;

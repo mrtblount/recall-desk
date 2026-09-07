@@ -6,7 +6,6 @@ import {
   internalQuery,
 } from "../_generated/server";
 import schema from "../schema";
-import { crawlPool } from "../pools";
 import { fetchAndMapCpsc, upsertInBatches } from "./cpsc";
 import { MAX_DETAIL_SCRAPES_PER_RUN } from "./detail";
 
@@ -73,6 +72,10 @@ export const runDueFeeds = internalAction({
   args: {},
   returns: v.object({ feedsRun: v.number(), changed: v.number() }),
   handler: async (ctx) => {
+    // Self-seeding: a fresh deployment must not depend on anyone remembering
+    // to run ensureSeeds — an empty registry would make every cron tick a
+    // silent no-op forever.
+    await ctx.runMutation(internal.crawl.feeds.ensureSeeds, {});
     const now = Date.now();
     const due = await ctx.runQuery(internal.crawl.feeds.listDueFeeds, { now });
     let feedsRun = 0;
@@ -86,15 +89,11 @@ export const runDueFeeds = internalAction({
         .toISOString()
         .slice(0, 10);
       const { docs, fetched, skipped } = await fetchAndMapCpsc(since);
-      const totals = await upsertInBatches(ctx, docs);
-      const toScrape = totals.changedIds.slice(0, MAX_DETAIL_SCRAPES_PER_RUN);
-      for (const recallId of toScrape) {
-        await crawlPool.enqueueAction(
-          ctx,
-          internal.crawl.detail.scrapeRecallDetail,
-          { recallId },
-        );
-      }
+      const totals = await upsertInBatches(
+        ctx,
+        docs,
+        MAX_DETAIL_SCRAPES_PER_RUN,
+      );
       await ctx.runMutation(internal.crawl.feeds.markFeedCrawled, {
         feedId: feed._id,
         crawledAt: now,
@@ -102,7 +101,7 @@ export const runDueFeeds = internalAction({
       feedsRun++;
       changed += totals.changedIds.length;
       console.log(
-        `feed ${feed.key}: fetched=${fetched} skipped=${skipped} inserted=${totals.inserted} updated=${totals.updated} unchanged=${totals.unchanged} detailScrapesEnqueued=${toScrape.length}`,
+        `feed ${feed.key}: fetched=${fetched} skipped=${skipped} inserted=${totals.inserted} updated=${totals.updated} unchanged=${totals.unchanged} detailScrapesEnqueued=${totals.detailScrapesEnqueued}`,
       );
     }
     return { feedsRun, changed };

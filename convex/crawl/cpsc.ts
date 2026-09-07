@@ -159,30 +159,37 @@ export async function fetchAndMapCpsc(
   return { fetched: json.length, skipped, docs };
 }
 
-/** Upsert mapped docs in bounded batches; returns totals + changed row ids. */
+/** Upsert mapped docs in bounded batches; returns totals + changed row ids.
+ * maxDetailScrapes > 0 lets each batch's mutation enqueue fresh detail
+ * scrapes transactionally with its hash writes, up to the cap overall. */
 export async function upsertInBatches(
   ctx: ActionCtx,
   docs: CrawlDoc[],
+  maxDetailScrapes = 0,
 ): Promise<{
   inserted: number;
   updated: number;
   unchanged: number;
   changedIds: Id<"recalls">[];
+  detailScrapesEnqueued: number;
 }> {
   let inserted = 0;
   let updated = 0;
   let unchanged = 0;
+  let detailScrapesEnqueued = 0;
   const changedIds: Id<"recalls">[] = [];
   for (let i = 0; i < docs.length; i += BATCH_SIZE) {
     const result = await ctx.runMutation(internal.recalls.upsertBatchFromCrawl, {
       docs: docs.slice(i, i + BATCH_SIZE),
+      maxDetailScrapes: Math.max(0, maxDetailScrapes - detailScrapesEnqueued),
     });
     inserted += result.inserted;
     updated += result.updated;
     unchanged += result.unchanged;
+    detailScrapesEnqueued += result.detailScrapesEnqueued;
     changedIds.push(...result.changedIds);
   }
-  return { inserted, updated, unchanged, changedIds };
+  return { inserted, updated, unchanged, changedIds, detailScrapesEnqueued };
 }
 
 /**

@@ -39,6 +39,9 @@ export const recallDoc = v.object({
   unitsText: v.optional(v.string()),
   publishedAt: v.number(),
   lastSeenAt: v.number(),
+  /** Set whenever a detail scrape reported (even a null remedyUrl), so the
+   * backfill converges instead of re-scraping no-link pages forever. */
+  detailScrapedAt: v.optional(v.number()),
   contentHash: v.string(),
   status: vRecallStatus,
 });
