@@ -1,0 +1,49 @@
+@font-face {
+  font-family: "Barlow Condensed";
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  src: url("./fonts/BarlowCondensed-700.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Barlow Condensed";
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+  src: url("./fonts/BarlowCondensed-800.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Barlow Condensed";
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+  src: url("./fonts/BarlowCondensed-900.ttf") format("truetype");
+}
+@font-face {
+  font-family: "DM Sans";
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  src: url("./fonts/DMSans-400.ttf") format("truetype");
+}
+@font-face {
+  font-family: "DM Sans";
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+  src: url("./fonts/DMSans-500.ttf") format("truetype");
+}
+@font-face {
+  font-family: "DM Sans";
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+  src: url("./fonts/DMSans-600.ttf") format("truetype");
+}
+@font-face {
+  font-family: "DM Sans";
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  src: url("./fonts/DMSans-700.ttf") format("truetype");
+}

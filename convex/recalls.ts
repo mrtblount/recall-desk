@@ -192,6 +192,21 @@ export const recentRecalls = query({
   },
 });
 
+/** Full-text search over recall titles (titles carry brand + product).
+ * Powers the board search box; bounded to 30 hits. */
+export const searchRecalls = query({
+  args: { query: v.string() },
+  returns: v.array(schema.doc("recalls")),
+  handler: async (ctx, args) => {
+    const q = args.query.trim();
+    if (q.length === 0) return [];
+    return await ctx.db
+      .query("recalls")
+      .withSearchIndex("search_title", (s) => s.search("title", q))
+      .take(30);
+  },
+});
+
 /** Public ticker counters. Null lastCrawlAt means the corpus is still empty. */
 export const stats = query({
   args: {},
