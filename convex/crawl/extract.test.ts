@@ -36,3 +36,19 @@ test("scores recall-flavored hostnames above plain ones and dedupes", () => {
   expect(c[0].url).toBe("https://productrecall.brandsite.com/");
   expect(c).toHaveLength(2);
 });
+
+test("rejects social-share widget links that embed the recall title", () => {
+  const md = `
+[Share](https://www.addtoany.com/share#url=https%3A%2F%2Fwww.cpsc.gov%2FRecalls%2F2000%2Fcpsc-trek-bicycle-corp-announce-recall-of-road-bikes&title=Trek%20Recall)
+[Mirror](https://mirror.example.com/?url=https://www.cpsc.gov/Recalls/2000/x)
+`;
+  expect(extractRemedyUrl(md)).toBeNull();
+});
+
+test("a bare off-site link without remedy evidence is not a remedy URL", () => {
+  const md = `
+Follow us on [Threads](https://www.threads.net/@uscpsc).
+Products were sold at [various retailers](https://www.retailmenot.example.com/).
+`;
+  expect(extractRemedyUrl(md)).toBeNull();
+});

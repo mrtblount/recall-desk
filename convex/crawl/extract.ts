@@ -18,6 +18,14 @@ const EXCLUDED_HOSTS = [
   /(^|\.)youtube\.com$/i,
   /(^|\.)linkedin\.com$/i,
   /(^|\.)tiktok\.com$/i,
+  /(^|\.)threads\.net$/i,
+  /(^|\.)bsky\.app$/i,
+  /(^|\.)mastodon\.[a-z]+$/i,
+  // Social-share widgets in CPSC page chrome — their share URLs embed the
+  // recall title, which fooled the first version of this scorer.
+  /(^|\.)addtoany\.com$/i,
+  /(^|\.)addthis\.com$/i,
+  /(^|\.)sharethis\.com$/i,
 ];
 
 const REMEDY_TEXT_RE = /remedy|recall|register|registration|claim|refund|repair|replacement|reimburse/i;
@@ -41,6 +49,9 @@ export function remedyCandidates(markdown: string): RemedyCandidate[] {
     }
     if (EXCLUDED_HOSTS.some((re) => re.test(host))) continue;
     if (MEDIA_RE.test(url)) continue;
+    // Share/redirect wrappers and anything that embeds a cpsc.gov URL in its
+    // query or fragment is page chrome, never a manufacturer remedy page.
+    if (/cpsc\.gov/i.test(url) || /[#?]url=/i.test(url)) continue;
     seen.add(url);
     let score = 0;
     if (/recall|remedy|claim/i.test(host)) score += 3;
@@ -60,9 +71,18 @@ export function remedyCandidates(markdown: string): RemedyCandidate[] {
     .map((x) => x.c);
 }
 
-/** Best guess at the manufacturer's remedy page, or null when the notice has
- * no usable off-site link. Never invents a URL. */
+/** A link must carry positive remedy evidence (recall-flavored host, or
+ * remedy-flavored text plus another signal) — a bare off-site link is page
+ * chrome or a company homepage, and a blocklist arms race never ends. */
+export const MIN_REMEDY_SCORE = 3;
+
+/** Best-evidenced manufacturer remedy page, or null. Never invents a URL and
+ * never falls back to "some link" — null is the honest answer for notices
+ * (e.g. pre-2010 press releases) with no manufacturer link at all. */
 export function extractRemedyUrl(markdown: string): string | null {
   const candidates = remedyCandidates(markdown);
-  return candidates.length > 0 ? candidates[0].url : null;
+  if (candidates.length === 0 || candidates[0].score < MIN_REMEDY_SCORE) {
+    return null;
+  }
+  return candidates[0].url;
 }

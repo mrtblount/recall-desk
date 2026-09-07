@@ -103,17 +103,18 @@ export const getById = internalQuery({
   handler: async (ctx, args) => await ctx.db.get("recalls", args.id),
 });
 
-/** Written by the Firecrawl detail scrape (convex/crawl/detail.ts). */
+/** Written by the Firecrawl detail scrape (convex/crawl/detail.ts).
+ * null clears the field (patching undefined removes it) so a page that lost
+ * its remedy link — or a bogus earlier extraction — self-heals on re-scrape. */
 export const enrichFromDetail = internalMutation({
-  args: { recallId: v.id("recalls"), remedyUrl: v.string() },
+  args: { recallId: v.id("recalls"), remedyUrl: v.union(v.string(), v.null()) },
   returns: v.null(),
   handler: async (ctx, args) => {
     const recall = await ctx.db.get("recalls", args.recallId);
     if (recall === null) return null;
-    if (recall.remedyUrl !== args.remedyUrl) {
-      await ctx.db.patch("recalls", args.recallId, {
-        remedyUrl: args.remedyUrl,
-      });
+    const next = args.remedyUrl ?? undefined;
+    if (recall.remedyUrl !== next) {
+      await ctx.db.patch("recalls", args.recallId, { remedyUrl: next });
     }
     return null;
   },

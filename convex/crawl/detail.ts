@@ -50,12 +50,12 @@ export const scrapeRecallDetail = internalAction({
       return { remedyUrlFound: false };
     }
     const remedyUrl = extractRemedyUrl(markdown);
-    if (remedyUrl !== null) {
-      await ctx.runMutation(internal.recalls.enrichFromDetail, {
-        recallId: args.recallId,
-        remedyUrl,
-      });
-    }
+    // Always report, including null: a re-scrape that finds no usable link
+    // CLEARS a previously stored (possibly bogus or withdrawn) remedyUrl.
+    await ctx.runMutation(internal.recalls.enrichFromDetail, {
+      recallId: args.recallId,
+      remedyUrl,
+    });
     return { remedyUrlFound: remedyUrl !== null };
   },
 });
