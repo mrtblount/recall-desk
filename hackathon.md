@@ -12,7 +12,7 @@
 - **Auth:** none
 - **AI models:** none
 - **Started:** 2026-08-30T06:30:40Z
-- **Last updated:** 2026-09-07T00:30:03Z
+- **Last updated:** 2026-09-08T00:25:19Z
 
 ## What this is
 
@@ -66,3 +66,14 @@ Session M3: the corpus updates itself. Registered the Firecrawl component (webho
 Live data QA caught the first extraction heuristic red-handed: on pre-2010 press-release pages (pulled in by the publish-date window) it returned CPSC page chrome — first AddToAny share links whose URLs embed the recall title, then the Threads profile. The fix was structural, not a longer blocklist: a minimum-evidence score, plus scrapes that always report so a null CLEARS a previously stored bogus or withdrawn link. Re-verified: three modern recalls extract their real portals (a recallrtr.com claim page, a dedicated skiphoprecall.com site, a retailer recall list); ten old press releases correctly cleared to none. A 22-agent adversarial review then confirmed four more defects before deploy: an unseeded registry that would have made every prod cron tick a silent no-op, change-triggered re-scrapes served from Firecrawl's 2-day cache (the exact rows flagged as changed), non-atomic hash-write/enqueue, and a non-converging backfill — all fixed, with `detailScrapedAt` now marking scraped rows. Measured: cron pipeline on dev ran fetched=35 → inserted=11 → 11 scrapes → 10 remedy URLs; free-tier rate limit observed at 429 with 26 req/min consumed, which is why the pool paces at 2.
 
 Next: M4 — FDA + FSIS feeds in the registry, hash-diff revisions surfaced, and the "expanded" badge.
+
+### 2026-09-07 - aa5e9cc
+Session M4 + a design milestone, in one evening.
+
+**The design.** Tony generated a landing design with ChatGPT against the live repo and it was good — so it was ported, not pasted: the prototype's static three-recall array became the live corpus behind `usePaginatedQuery` plus a new full-text `searchRecalls` query on the title search index; its embedded OFL fonts became real hashed Vite assets; its recall-detail dialog now surfaces the Firecrawl-extracted manufacturer remedy link; its sample desk/claim dialogs run on a real active recall and keep their "sample preview / no claim was sent" labels. Hosting stays on the Convex static-hosting component (`convex.site`) — the rules score `chatgpt.site` identically and it would have traded live reactivity for a static page. Design provenance noted here on purpose: ChatGPT drew it, this repo wired it to Convex.
+
+**The feeds.** FDA and USDA-FSIS joined the corpus: **1,538 recalls across three agencies on production** (CPSC 193, FDA 110, FSIS 1,235), all pulled by the deploy-time cron tick with no manual action — the registry design from M3 meant two new rows and two handlers, zero new crons. FDA (openFDA food + drug enforcement) needed dual windows because records carry no per-record update timestamp: `report_date` catches new records, `termination_date` catches closures; degenerate `"N/A"`/empty recall numbers (which exist in live data and would collide as one upsert key) are skipped. FSIS needed the best Firecrawl story so far: its API bot-walls datacenter clients (403 from the deployment even with a browser header set), so the handler falls through to **fetching the government API through Firecrawl** — verified live, 1,235 records parsed on the first run. Expansions arrive from FSIS as new `-EXP` records and flip the "expanded" badge honestly (the one live expanded row is a real `pha-051617-exp` alert, caught case-insensitively after trimming a trailing space the live data actually contains).
+
+**The reviews.** A 22-agent adversarial pass confirmed 8 findings before the prod deploy, including: closed recalls could never reopen (mappers now assert the active state they know, and an explicit active override reopens a row); the every-run `lastSeenAt` patch at 1,500-row scale would have re-pushed every open board subscription (now touched at most every 12 h); and the detail dialog presented terminated recalls as live safety guidance (closed rows now open with "This recall is closed." and reference framing; FSIS public health alerts are labeled as alerts; FDA rows show their recall number as a lookup path). Revision rows are now written only when content actually changed, so the status-migration run produced zero junk revisions. 20 tests green.
+
+Next: M5 — auth and the user shell, with the shared AgentMail receipts inbox (free plan allows three inboxes total, so sender-address routing replaces per-user inboxes).
