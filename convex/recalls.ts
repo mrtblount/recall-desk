@@ -7,7 +7,7 @@ import { internalMutation, internalQuery, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { crawlPool } from "./pools";
-import schema, { recallDoc, vSource } from "./schema";
+import schema, { recallDoc, vRecallStatus, vSource } from "./schema";
 
 /** What a crawl produces: everything except the server-stamped fields. */
 export const crawlInput = recallDoc.omit(
@@ -15,6 +15,21 @@ export const crawlInput = recallDoc.omit(
   "status",
   "detailScrapedAt",
 );
+
+/** Crawl input plus an optional source-asserted status (FDA Terminated ->
+ * closed, FSIS -EXP -> expanded). Participates in the contentHash upstream,
+ * so a source-side status flip is detected as a content change. */
+export const crawlInputWithStatus = crawlInput.extend({
+  statusOverride: v.optional(vRecallStatus),
+});
+
+const EXPANSION_RE = /expand|reannounc|additional (units|products|lots)/i;
+
+/** Content fields compared for the revision diffSummary. */
+const DIFF_FIELDS = [
+  "title", "description", "productDesc", "hazard", "remedySummary",
+  "unitsText", "imageUrl", "publishedAt", "consumerContact",
+] as const;
 
 /**
  * Idempotent upsert keyed on [source, sourceId]:
@@ -28,7 +43,7 @@ export const crawlInput = recallDoc.omit(
  */
 export const upsertBatchFromCrawl = internalMutation({
   args: {
-    docs: v.array(crawlInput),
+    docs: v.array(crawlInputWithStatus),
     // Max fresh detail scrapes to enqueue IN THIS TRANSACTION for changed
     // rows. Enqueueing here (workpool's primary pattern) makes the hash
     // write and the scrape enqueue atomic — an action dying between the two
@@ -61,7 +76,8 @@ export const upsertBatchFromCrawl = internalMutation({
       );
       detailScrapesEnqueued++;
     };
-    for (const doc of args.docs) {
+    for (const raw of args.docs) {
+      const { statusOverride, ...doc } = raw;
       const existing = await ctx.db
         .query("recalls")
         .withIndex("by_source_and_sourceId", (q) =>
@@ -72,10 +88,12 @@ export const upsertBatchFromCrawl = internalMutation({
         const id = await ctx.db.insert("recalls", {
           ...doc,
           lastSeenAt: now,
-          status: "active",
+          status: statusOverride ?? "active",
         });
         changedIds.push(id);
-        await enqueueScrape(id);
+        // Detail scrapes are CPSC-specific (their notices carry the
+        // manufacturer remedy links; FDA rows have no per-record URL).
+        if (doc.source === "cpsc") await enqueueScrape(id);
         inserted++;
       } else if (existing.contentHash === doc.contentHash) {
         await ctx.db.patch("recalls", existing._id, { lastSeenAt: now });
@@ -86,25 +104,39 @@ export const upsertBatchFromCrawl = internalMutation({
           _creationTime,
           lastSeenAt: _lastSeenAt,
           status: _status,
+          detailScrapedAt: _detailScrapedAt,
           ...prior
         } = existing;
+        const changedFields = DIFF_FIELDS.filter(
+          (f) => JSON.stringify(existing[f]) !== JSON.stringify(doc[f]),
+        );
         await ctx.db.insert("recallRevisions", {
           recallId: existing._id,
           crawledAt: now,
           contentHash: existing.contentHash,
           snapshot: prior,
+          diffSummary:
+            changedFields.length > 0 ? `Changed: ${changedFields.join(", ")}` : undefined,
         });
+        // Status: source assertion wins; else a title that NEWLY reads as an
+        // expansion flips to "expanded"; else keep what we had.
+        const nextStatus =
+          statusOverride ??
+          (EXPANSION_RE.test(doc.title) && !EXPANSION_RE.test(existing.title)
+            ? ("expanded" as const)
+            : existing.status);
         await ctx.db.replace("recalls", existing._id, {
           ...doc,
           // remedyUrl is enrichment from the Firecrawl detail scrape, not an
           // API field — preserve it through content replaces; the re-enqueued
           // detail scrape refreshes it if the notice changed.
           remedyUrl: doc.remedyUrl ?? existing.remedyUrl,
+          detailScrapedAt: existing.detailScrapedAt,
           lastSeenAt: now,
-          status: existing.status,
+          status: nextStatus,
         });
         changedIds.push(existing._id);
-        await enqueueScrape(existing._id);
+        if (doc.source === "cpsc") await enqueueScrape(existing._id);
         updated++;
       }
     }

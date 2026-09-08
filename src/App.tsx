@@ -330,7 +330,7 @@ export default function App() {
     dialogBody = (
       <>
         <h2 id="dialog-title">Straight from<br />the source.</h2>
-        <p>Recalls come directly from the U.S. Consumer Product Safety Commission (via SaferProducts.gov), refreshed automatically every two hours, with each card linking to its official notice. FDA and USDA-FSIS feeds are next; NHTSA follows.</p>
+        <p>Recalls come directly from the U.S. CPSC (SaferProducts.gov), the FDA (openFDA enforcement reports), and USDA-FSIS, refreshed automatically on crons, with each card linking to official information. NHTSA vehicle recalls are next.</p>
         <div className="dialog-actions">
           <a className="button button--outline" href="https://www.cpsc.gov/Recalls" target="_blank" rel="noopener noreferrer">CPSC.gov <Arrow /></a>
         </div>
@@ -392,7 +392,7 @@ export default function App() {
 
           <div className="board-status">
             <span className="eyebrow"><span className="status-dot" aria-hidden="true" />Public recall board</span>
-            <span className="source-status">CPSC live · FDA, FSIS next</span>
+            <span className="source-status">CPSC · FDA · FSIS live</span>
             <span>No account needed</span>
           </div>
 
@@ -435,7 +435,7 @@ export default function App() {
             )}
             <p className="board-note board-live-note">
               Every card is a real official notice — nothing is invented. See each notice for affected models and remedy details.<br />
-              Live corpus, refreshed automatically every 2 hours from SaferProducts.gov.
+              Live corpus from CPSC, FDA, and USDA-FSIS, refreshed automatically on crons.
             </p>
           </section>
         </main>

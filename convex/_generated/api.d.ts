@@ -11,7 +11,9 @@
 import type * as crawl_cpsc from "../crawl/cpsc.js";
 import type * as crawl_detail from "../crawl/detail.js";
 import type * as crawl_extract from "../crawl/extract.js";
+import type * as crawl_fda from "../crawl/fda.js";
 import type * as crawl_feeds from "../crawl/feeds.js";
+import type * as crawl_fsis from "../crawl/fsis.js";
 import type * as crons from "../crons.js";
 import type * as health from "../health.js";
 import type * as http from "../http.js";
@@ -28,7 +30,9 @@ declare const fullApi: ApiFromModules<{
   "crawl/cpsc": typeof crawl_cpsc;
   "crawl/detail": typeof crawl_detail;
   "crawl/extract": typeof crawl_extract;
+  "crawl/fda": typeof crawl_fda;
   "crawl/feeds": typeof crawl_feeds;
+  "crawl/fsis": typeof crawl_fsis;
   crons: typeof crons;
   health: typeof health;
   http: typeof http;

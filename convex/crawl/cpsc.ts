@@ -32,7 +32,7 @@ function stringsFrom(list: unknown, key: string, max: number, each: number): str
   return out;
 }
 
-async function sha256Hex(text: string): Promise<string> {
+export async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(text),
@@ -164,7 +164,7 @@ export async function fetchAndMapCpsc(
  * scrapes transactionally with its hash writes, up to the cap overall. */
 export async function upsertInBatches(
   ctx: ActionCtx,
-  docs: CrawlDoc[],
+  docs: Array<CrawlDoc & { statusOverride?: "active" | "expanded" | "closed" }>,
   maxDetailScrapes = 0,
 ): Promise<{
   inserted: number;

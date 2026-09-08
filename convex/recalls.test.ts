@@ -108,3 +108,26 @@ test("recentRecalls pages newest first", async () => {
   expect(page2.page.map((r: { publishedAt: number }) => r.publishedAt)).toEqual([1_000]);
   expect(page2.isDone).toBe(true);
 });
+
+test("statusOverride applies on insert and update; expansion regex flips status", async () => {
+  const t = convexTest(schema, modules);
+  await t.mutation(internal.recalls.upsertBatchFromCrawl, {
+    docs: [doc({ sourceId: "fda-1", source: "fda", statusOverride: "closed" })],
+  });
+  let rows = await t.run(async (ctx) => await ctx.db.query("recalls").collect());
+  expect(rows[0].status).toBe("closed");
+
+  await t.mutation(internal.recalls.upsertBatchFromCrawl, {
+    docs: [doc({ sourceId: "10949", title: "Product Recall EXPANDED to More Units", contentHash: "h2" })],
+  });
+  await t.mutation(internal.recalls.upsertBatchFromCrawl, { docs: [doc()] }); // seed base first? (kept for ordering)
+  const t2 = convexTest(schema, modules);
+  await t2.mutation(internal.recalls.upsertBatchFromCrawl, { docs: [doc()] });
+  await t2.mutation(internal.recalls.upsertBatchFromCrawl, {
+    docs: [doc({ title: "Product Recall EXPANDED to Additional Units", contentHash: "h2" })],
+  });
+  rows = await t2.run(async (ctx) => await ctx.db.query("recalls").collect());
+  expect(rows[0].status).toBe("expanded");
+  const revisions = await t2.run(async (ctx) => await ctx.db.query("recallRevisions").collect());
+  expect(revisions[0].diffSummary).toContain("title");
+});
