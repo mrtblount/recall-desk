@@ -85,17 +85,18 @@ export function mapFsisRecord(rec: Record<string, unknown>): Omit<CrawlDocWithSt
   const url = asString(rec.field_recall_url).trim().replace(/^http:\/\//, "https://");
 
   const isExpansion = /-EXP\s*$/i.test(recallNumber);
+  // Assert the state we know — an undefined override could never REOPEN a
+  // closed row when FSIS flips a record back to Active (review finding).
   const statusOverride =
     recallType === "Closed Recall"
       ? ("closed" as const)
       : isExpansion
         ? ("expanded" as const)
-        : undefined;
+        : ("active" as const);
 
   const hazardParts = [
     recallType === "Public Health Alert" ? "Public health alert" : "",
-    reasons.join(", "),
-    riskLevel ? `(${riskLevel})` : "",
+    [reasons.join(", "), riskLevel ? `(${riskLevel})` : ""].filter((p) => p !== "").join(" "),
   ].filter((p) => p !== "");
 
   return {
@@ -107,7 +108,7 @@ export function mapFsisRecord(rec: Record<string, unknown>): Omit<CrawlDocWithSt
     brandNames: [],
     productDesc: cap(products.join("; "), 1500),
     upcs: [],
-    hazard: cap(hazardParts.join(" "), 2000),
+    hazard: cap(hazardParts.join(" — "), 2000),
     // Sourced from the official summary (FSIS notices carry an "urged not
     // to consume… should be thrown away or returned" sentence); empty when
     // absent — never synthesized.

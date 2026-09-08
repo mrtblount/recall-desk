@@ -29,7 +29,13 @@ const EXPANSION_RE = /expand|reannounc|additional (units|products|lots)/i;
 const DIFF_FIELDS = [
   "title", "description", "productDesc", "hazard", "remedySummary",
   "unitsText", "imageUrl", "publishedAt", "consumerContact",
+  "brandNames", "upcs", "remedyOptions",
 ] as const;
+
+/** Touch lastSeenAt at most this often on unchanged rows — an every-run
+ * patch at 1,500-row scale is pure churn that re-pushes every open board
+ * subscription (review finding). */
+const LAST_SEEN_REFRESH_MS = 12 * 60 * 60 * 1000;
 
 /**
  * Idempotent upsert keyed on [source, sourceId]:
@@ -96,7 +102,9 @@ export const upsertBatchFromCrawl = internalMutation({
         if (doc.source === "cpsc") await enqueueScrape(id);
         inserted++;
       } else if (existing.contentHash === doc.contentHash) {
-        await ctx.db.patch("recalls", existing._id, { lastSeenAt: now });
+        if (now - existing.lastSeenAt > LAST_SEEN_REFRESH_MS) {
+          await ctx.db.patch("recalls", existing._id, { lastSeenAt: now });
+        }
         unchanged++;
       } else {
         const {
@@ -110,16 +118,21 @@ export const upsertBatchFromCrawl = internalMutation({
         const changedFields = DIFF_FIELDS.filter(
           (f) => JSON.stringify(existing[f]) !== JSON.stringify(doc[f]),
         );
-        await ctx.db.insert("recallRevisions", {
-          recallId: existing._id,
-          crawledAt: now,
-          contentHash: existing.contentHash,
-          snapshot: prior,
-          diffSummary:
-            changedFields.length > 0 ? `Changed: ${changedFields.join(", ")}` : undefined,
-        });
-        // Status: source assertion wins; else a title that NEWLY reads as an
-        // expansion flips to "expanded"; else keep what we had.
+        // Archive only when CONTENT changed — a status-only flip (e.g. the
+        // active-override hash migration, or Ongoing->Terminated) has no
+        // superseded content worth a revision row.
+        if (changedFields.length > 0) {
+          await ctx.db.insert("recallRevisions", {
+            recallId: existing._id,
+            crawledAt: now,
+            contentHash: existing.contentHash,
+            snapshot: prior,
+            diffSummary: `Changed: ${changedFields.join(", ")}`,
+          });
+        }
+        // Status: source assertion wins (an explicit "active" can REOPEN a
+        // closed row); else a title that NEWLY reads as an expansion flips
+        // to "expanded"; else keep what we had.
         const nextStatus =
           statusOverride ??
           (EXPANSION_RE.test(doc.title) && !EXPANSION_RE.test(existing.title)
@@ -230,7 +243,7 @@ export const searchRecalls = query({
   args: { query: v.string() },
   returns: v.array(schema.doc("recalls")),
   handler: async (ctx, args) => {
-    const q = args.query.trim();
+    const q = args.query.trim().slice(0, 120);
     if (q.length === 0) return [];
     return await ctx.db
       .query("recalls")

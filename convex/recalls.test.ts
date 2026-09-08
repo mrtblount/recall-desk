@@ -109,6 +109,21 @@ test("recentRecalls pages newest first", async () => {
   expect(page2.isDone).toBe(true);
 });
 
+test("an explicit active override REOPENS a closed recall", async () => {
+  const t = convexTest(schema, modules);
+  await t.mutation(internal.recalls.upsertBatchFromCrawl, {
+    docs: [doc({ sourceId: "fsis-1", source: "fsis", statusOverride: "closed" })],
+  });
+  await t.mutation(internal.recalls.upsertBatchFromCrawl, {
+    docs: [doc({ sourceId: "fsis-1", source: "fsis", statusOverride: "active", contentHash: "h2" })],
+  });
+  const rows = await t.run(async (ctx) => await ctx.db.query("recalls").collect());
+  expect(rows[0].status).toBe("active");
+  // status-only change: no content diff, so no revision row
+  const revisions = await t.run(async (ctx) => await ctx.db.query("recallRevisions").collect());
+  expect(revisions).toHaveLength(0);
+});
+
 test("statusOverride applies on insert and update; expansion regex flips status", async () => {
   const t = convexTest(schema, modules);
   await t.mutation(internal.recalls.upsertBatchFromCrawl, {

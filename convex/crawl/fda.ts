@@ -110,7 +110,9 @@ export function mapFdaRecord(rec: Record<string, unknown>): Omit<CrawlDocWithSta
     unitsText: quantity ? cap(quantity, 120) : undefined,
     publishedAt,
     statusOverride:
-      status === "Completed" || status === "Terminated" ? ("closed" as const) : undefined,
+      status === "Completed" || status === "Terminated"
+        ? ("closed" as const)
+        : ("active" as const),
   };
 }
 

@@ -117,9 +117,16 @@ function RecallCard({ recall, onShow }: { recall: Recall; onShow: () => void }) 
 
 function RecallDetail({ recall, onWelcome }: { recall: Recall; onWelcome: () => void }) {
   const units = recall.unitsText ? unitsLabel(recall.unitsText) : "";
+  const closed = recall.status === "closed";
   return (
     <>
-      <h2 id="dialog-title">Know what to do next.</h2>
+      <h2 id="dialog-title">{closed ? "This recall is closed." : "Know what to do next."}</h2>
+      {closed && (
+        <p className="dialog-muted">
+          Listed for historical reference — the remedy below may no longer be
+          available. Check the official source for current status.
+        </p>
+      )}
       <div className="dialog-product">
         {recall.imageUrl && <img src={recall.imageUrl} alt={recall.imageCaption ?? "Recalled product"} />}
         <div>
@@ -140,8 +147,14 @@ function RecallDetail({ recall, onWelcome }: { recall: Recall; onWelcome: () => 
       </div>
       {recall.remedySummary && (
         <div className="detail-block">
-          <span className="detail-label">What to do</span>
+          <span className="detail-label">{closed ? "What the notice said to do" : "What to do"}</span>
           <p>{recall.remedySummary}</p>
+        </div>
+      )}
+      {recall.source === "fda" && (
+        <div className="detail-block">
+          <span className="detail-label">Look it up</span>
+          <p>FDA recall number {recall.sourceId} — search it in FDA's enforcement database for the full record.</p>
         </div>
       )}
       <div className="dialog-actions">
@@ -154,7 +167,7 @@ function RecallDetail({ recall, onWelcome }: { recall: Recall; onWelcome: () => 
           </>
         ) : (
           <a className="button button--orange" href={recall.url} target="_blank" rel="noopener noreferrer">
-            Read official notice <Arrow /><span className="sr-only"> (opens in a new tab)</span>
+            {recall.source === "fda" ? "FDA recalls & safety alerts" : "Read official notice"} <Arrow /><span className="sr-only"> (opens in a new tab)</span>
           </a>
         )}
         <button className="button button--outline" onClick={onWelcome}>Watch my purchases</button>
@@ -187,8 +200,10 @@ export default function App() {
     { initialNumItems: 12 },
   );
 
+  const searching = activeSearch && searchResults === undefined;
   const shown: Recall[] = activeSearch ? (searchResults ?? []) : results;
-  const sample = results.find((r) => r.imageUrl) ?? results[0];
+  const active = results.filter((r) => r.status === "active");
+  const sample = active.find((r) => r.imageUrl) ?? active[0];
 
   const [screen, setScreen] = useState<Screen | null>(null);
   const [navOpen, setNavOpen] = useState(false);
@@ -208,9 +223,13 @@ export default function App() {
   const open = (kind: Screen["kind"]) => () => setScreen({ kind } as Screen);
   const close = () => setScreen(null);
 
+  const noticeKind = (r: Recall) =>
+    r.source === "fsis" && /^Public health alert/i.test(r.hazard)
+      ? "public health alert"
+      : "recall";
   const dialogLabel =
     screen?.kind === "recall"
-      ? `Official ${SOURCE_LABEL[screen.recall.source]} recall · ${fmtDate(screen.recall.publishedAt)}`
+      ? `Official ${SOURCE_LABEL[screen.recall.source]} ${noticeKind(screen.recall)} · ${fmtDate(screen.recall.publishedAt)}${screen.recall.status === "closed" ? " · CLOSED" : screen.recall.status === "expanded" ? " · EXPANDED" : ""}`
       : screen?.kind === "welcome" ? "The personal desk · Preview"
       : screen?.kind === "desk" ? "My desk · Sample preview"
       : screen?.kind === "claim" ? "Your approval comes first · Sample preview"
@@ -236,7 +255,7 @@ export default function App() {
           <button className="button button--orange" onClick={open("claim")}>Explore a sample claim <Arrow /></button>
           <button className="button button--outline" onClick={close}>Browse recalls</button>
         </div>
-        <p className="dialog-muted">Personal monitoring is in development — accounts open this week. This preview does not create an account or collect receipts.</p>
+        <p className="dialog-muted">Personal monitoring is in development — accounts are opening soon. This preview does not create an account or collect receipts.</p>
       </>
     );
   } else if (screen?.kind === "desk") {
@@ -312,7 +331,7 @@ export default function App() {
       <>
         <h2 id="dialog-title">You bought it.<br />We watch it.</h2>
         <p>Recall Desk watches the U.S. federal recall feeds around the clock and — soon — matches them against the retailer receipts you forward, preparing the claim for your approval.</p>
-        <p>Built solo for the Convex All Gas Hackathon on Convex, Firecrawl, AgentMail, and OpenAI. Every recall shown is a real official notice; nothing is invented.</p>
+        <p>Built solo for the Convex All Gas Hackathon on Convex and Firecrawl today, with AgentMail and OpenAI powering the receipt-matching lane that's next. Every recall shown is a real official notice; nothing is invented.</p>
         <div className="dialog-actions">
           <a className="button button--outline" href={REPO} target="_blank" rel="noopener noreferrer">Source on GitHub <Arrow /></a>
           <a className="button button--outline" href={`${REPO}/blob/main/hackathon.md`} target="_blank" rel="noopener noreferrer">Build log</a>
@@ -352,7 +371,6 @@ export default function App() {
             <button className="nav-link" onClick={open("desk")}>My desk</button>
           </nav>
           <div className="header-actions">
-            <button className="nav-link login" onClick={open("desk")}>Log in</button>
             <button className="button" onClick={open("welcome")}>Get started <Arrow /></button>
             <button className="menu-toggle" aria-expanded={navOpen} aria-controls="main-nav" aria-label="Open navigation" onClick={() => setNavOpen((v) => !v)}>
               <svg className="icon" aria-hidden="true"><use href="#i-menu" /></svg>
@@ -415,7 +433,7 @@ export default function App() {
               </div>
             </div>
             <p className="sr-only" role="status" aria-live="polite">
-              {activeSearch ? `${shown.length} ${shown.length === 1 ? "recall" : "recalls"} match your search.` : ""}
+              {activeSearch && !searching ? `${shown.length} ${shown.length === 1 ? "recall" : "recalls"} match your search.` : ""}
             </p>
             <div className="recall-grid" id="recall-grid">
               {shown.map((recall) => (
@@ -424,9 +442,9 @@ export default function App() {
             </div>
             {shown.length === 0 && (
               <div className="empty-state">
-                <h3>{activeSearch ? "No matches." : status === "LoadingFirstPage" ? "Loading the corpus…" : "Corpus is seeding."}</h3>
-                <p>{activeSearch ? "Try another product, brand, or model — or clear the search for the full live list." : "Real recalls appear here the moment the next crawl lands."}</p>
-                {activeSearch && <button className="button button--outline" onClick={() => setQuery("")}>Clear search</button>}
+                <h3>{searching ? "Searching…" : activeSearch ? "No matches." : status === "LoadingFirstPage" ? "Loading the corpus…" : "Corpus is seeding."}</h3>
+                <p>{searching ? "Looking across the live corpus." : activeSearch ? "Try another product, brand, or model — or clear the search for the full live list." : "Real recalls appear here the moment the next crawl lands."}</p>
+                {activeSearch && !searching && <button className="button button--outline" onClick={() => setQuery("")}>Clear search</button>}
               </div>
             )}
             {!activeSearch && status === "CanLoadMore" && (

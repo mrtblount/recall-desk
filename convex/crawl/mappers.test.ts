@@ -25,7 +25,7 @@ test("FDA mapper: full record", () => {
   expect(doc.hazard).toContain("Class II");
   expect(doc.upcs).toContain("632687615989");
   expect(doc.upcs).toContain("6908791000053");
-  expect(doc.statusOverride).toBeUndefined();
+  expect(doc.statusOverride).toBe("active");
   expect(doc.brandNames).toEqual(["H & U Inc. dba Sun Noodle"]);
 });
 
@@ -63,6 +63,12 @@ const fsisRecord = {
   field_states: ["Texas", "Idaho", "Texas"],
   field_recall_url: "http://www.fsis.usda.gov/recalls-alerts/example",
 };
+
+test("FSIS mapper: Active Recall asserts active (reopen path)", () => {
+  const doc = mapFsisRecord({ ...fsisRecord, field_recall_number: "019-2026" })!;
+  expect(doc.statusOverride).toBe("active");
+  expect(doc.hazard).toBe("Product Contamination (High - Class I)");
+});
 
 test("FSIS mapper: trims id, detects -EXP expansion despite trailing space", () => {
   const doc = mapFsisRecord(fsisRecord)!;
