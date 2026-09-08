@@ -17,3 +17,4 @@
 .remedy-cta-note { font-size: 12px; color: var(--muted); margin-top: 6px; }
 
 .flag-expanded { color: var(--orange); font-weight: 700; letter-spacing: 0.08em; }
+.flag-closed { color: var(--muted); letter-spacing: 0.08em; }

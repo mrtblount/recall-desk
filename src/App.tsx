@@ -103,6 +103,7 @@ function RecallCard({ recall, onShow }: { recall: Recall; onShow: () => void }) 
       <p className="product-meta">
         {SOURCE_LABEL[recall.source]} · <time dateTime={new Date(recall.publishedAt).toISOString()}>{fmtDate(recall.publishedAt)}</time>
         {recall.status === "expanded" && <span className="flag-expanded"> · EXPANDED</span>}
+        {recall.status === "closed" && <span className="flag-closed"> · CLOSED</span>}
       </p>
       <h3 className="product-title"><button onClick={onShow}>{recall.title}</button></h3>
       <p className="product-hazard">{hazardShort(recall.hazard)}</p>
