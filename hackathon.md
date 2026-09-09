@@ -12,7 +12,7 @@
 - **Auth:** Convex Auth
 - **AI models:** gpt-5.6-luna (receipt extraction; terra staged for escalation)
 - **Started:** 2026-08-30T06:30:40Z
-- **Last updated:** 2026-09-09T04:31:11Z
+- **Last updated:** 2026-09-09T22:23:45Z
 
 ## What this is
 
@@ -110,3 +110,10 @@ Session M8: the remedy page becomes a checklist. When a match records, the manuf
 The adversarial review (22 agents, 10 confirmed, 0 refuted) then attacked the new trust boundary — third-party page content becoming clickable CTAs in a safety flow — and won its keep again: extracted claim links now pass a grounded sanitizer (must appear verbatim in the scraped page AND share the portal's registrable domain, so neither a hallucination nor an injected phishing URL can become the orange button; verified live: a real submission-form URL survived, an ungrounded one was stripped to a safe fallback). Bot-wall pages are detected and never saved (one Cloudflare challenge would otherwise have marked a portal "unreadable" forever), failed reads retry after cool-down, healed remedy URLs re-scrape, a 7-day TTL keeps deadlines from going stale, extraction saves are content-hash-guarded against clobbering, orphaned storage blobs are cleaned, and closed recalls demote the whole checklist to labeled historical reference. 34 tests green.
 
 Next: M9 — claim drafting, approval, allowlist-guarded send, and inbound replies threading onto the claim timeline. Then the M10 full-loop gate.
+
+### 2026-09-10 - (M9)
+Session M9: the loop closes. Claims are drafted by `gpt-5.6-luna` from the item, the official recall, and the extracted remedy procedure — facts only, bracketed placeholders for what the data doesn't hold — and the live draft showed real judgment, flagging on its own that the item was bought at a retailer the notice doesn't list and asking the manufacturer to confirm eligibility. The human gate is absolute: the user edits recipient, subject, and body, and nothing sends without approval; the send runs at-most-once through the hard outbound allowlist. Delivery events advance the timeline by thread; an inbound reply on the claim thread lands as a quoted timeline event and flips the claim to replied. The gate ran live in a browser: claim sent at 18:05:13, the counterparty's reply threaded onto the open screen at 18:05:50 — 37 seconds, no refresh. The allowlist even had a cameo: the first send was blocked (the test counterparty inbox wasn't yet allowlisted) and the timeline said exactly why before the claim fell honestly back to draft.
+
+The adversarial review (20 agents, 9 confirmed, 0 refuted) hardened the part that will meet the real world: thread membership alone no longer authenticates a reply — anyone who learns a Message-ID can join a thread via In-Reply-To, so only mail from the claim recipient's address or domain advances state, and everything else is a visibly flagged unverified event. Edits are locked to drafts and the send slot is claimed atomically (a race between an edit-after-approve and the in-flight send could previously double-send); a bookkeeping failure after a successful send can no longer masquerade as a send failure and re-arm the approve button; bounces return to draft; stranded states recover by cron; and drafts are never silently truncated — what the user approves is byte-for-byte what sends. 36 tests green.
+
+Next: M10 — the full-loop rehearsal on production, end to end, no backend touching.
