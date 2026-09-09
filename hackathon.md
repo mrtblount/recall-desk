@@ -12,7 +12,7 @@
 - **Auth:** Convex Auth
 - **AI models:** none
 - **Started:** 2026-08-30T06:30:40Z
-- **Last updated:** 2026-09-09T00:36:45Z
+- **Last updated:** 2026-09-09T01:35:10Z
 
 ## What this is
 
@@ -84,3 +84,8 @@ Session M5: accounts are real. Convex Auth v1 (beta) with a custom 8-digit email
 An 18-agent security review confirmed 7 findings pre-deploy, the sharpest two: the unconfigured-mailer fallback failed open — a production visitor would have been told "we sent a code" while the code sat in dashboard-only logs (now: prod throws and the UI says plainly that email delivery is still being connected, which is exactly what the live site shows today); and email normalization lived only in the client while `signIn` is a public action, so a directly-invoked mixed-case email would have minted a duplicate account with its own ingest alias (now enforced server-side in the provider). Also fixed from review: sign-out no longer strands a stale code screen, the code step gained a real resend button, and every dialog that still claimed "accounts are opening soon" was corrected — they're open. Verified end to end in a real browser on dev (sign-up through to the tagged desk) and on production (honest unconfigured-mailer behavior). 22 tests green.
 
 Next: connect the AgentMail key — one shared receipts inbox, plus-addressing smoke test, live OTP delivery — then M6: the inbound webhook and receipt-to-items extraction.
+
+### 2026-09-09 - (working tree follows 755e0e0)
+AgentMail connected — the email lane is live. Before the first real send could fire, the hard-constraint outbound allowlist went in: every send checks an env allowlist of owner-controlled addresses (exact matches plus domain suffixes; a plus-alias canonicalizes to its base), negative-tested with a blocked stranger address. The shared receipts inbox was provisioned idempotently, and the decisive experiment passed: **plus-addressing delivers** — mail sent to the inbox's +alias landed in the base inbox with the alias intact in `to`, so every user's dedicated forwarding address costs zero marginal inboxes. Then the full sign-in loop ran with real email in a real browser: OTP delivered by AgentMail, code read back over the API, session established, desk showing the live per-user alias. The M5 done-means — a new account sees its own forwarding address — is now true in the strongest sense: the address exists, routes, and receives.
+
+Next: M6 — the AgentMail component + inbound webhook, raw persistence, classification, and OpenAI receipt-to-items extraction behind the daily budget guard.
