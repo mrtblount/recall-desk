@@ -7,12 +7,12 @@
 - **Repo:** https://github.com/mrtblount/recall-desk
 - **Frontend:** Convex static hosting
 - **Convex deployment:** https://tremendous-bullfrog-311.convex.cloud
-- **Components:** @convex-dev/static-hosting, @firecrawl/firecrawl-convex, @convex-dev/workpool (crawlPool)
+- **Components:** @convex-dev/static-hosting, @firecrawl/firecrawl-convex, @agentmail/convex, @convex-dev/workpool (crawlPool, llmPool)
 - **Convex features:** schema, tables, indexes, full-text search index, queries, mutations, actions, internal functions, paginated queries, realtime queries, HTTP actions, crons, scheduled functions (workpool), components, tests (convex-test)
 - **Auth:** Convex Auth
-- **AI models:** none
+- **AI models:** gpt-5.6-luna (receipt extraction; terra staged for escalation)
 - **Started:** 2026-08-30T06:30:40Z
-- **Last updated:** 2026-09-09T01:35:10Z
+- **Last updated:** 2026-09-09T02:10:03Z
 
 ## What this is
 
@@ -89,3 +89,10 @@ Next: connect the AgentMail key — one shared receipts inbox, plus-addressing s
 AgentMail connected — the email lane is live. Before the first real send could fire, the hard-constraint outbound allowlist went in: every send checks an env allowlist of owner-controlled addresses (exact matches plus domain suffixes; a plus-alias canonicalizes to its base), negative-tested with a blocked stranger address. The shared receipts inbox was provisioned idempotently, and the decisive experiment passed: **plus-addressing delivers** — mail sent to the inbox's +alias landed in the base inbox with the alias intact in `to`, so every user's dedicated forwarding address costs zero marginal inboxes. Then the full sign-in loop ran with real email in a real browser: OTP delivered by AgentMail, code read back over the API, session established, desk showing the live per-user alias. The M5 done-means — a new account sees its own forwarding address — is now true in the strongest sense: the address exists, routes, and receives.
 
 Next: M6 — the AgentMail component + inbound webhook, raw persistence, classification, and OpenAI receipt-to-items extraction behind the daily budget guard.
+
+### 2026-09-09 - 761f3c3
+Session M6: a forwarded receipt becomes item cards, live. The whole lane runs on the sponsor stack: the AgentMail component ingests inbound mail through a svix-verified webhook (raw message persisted before any parsing, deduped by event id — one confined type cast covers the component's known convex-1.45 typing gap), routing is by each user's plus-alias tag, classification gates a workpool-scheduled OpenAI extraction (`gpt-5.6-luna`, strict JSON schema), and the desk UI subscribes. The gate was passed in its strongest form: with the desk dialog OPEN in a browser, a seeded receipt (disclosed as seeded; two of its three products are genuinely recalled in the corpus — that's the matcher's test bed) was emailed to the alias and the item cards materialized reactively about 25 seconds later, models `PY-PBK5M-TB2` and `9R263210` extracted exactly, no refresh. First real LLM spend on the books: $0.00017 per receipt, logged to the usage ledger under the hard budget guard ($70 total / $5 daily caps that halt loudly — at this rate the ceiling equals roughly 440,000 receipts).
+
+Field notes that cost an hour and now cost nobody: AgentMail fires no `message.received` for self-sends (the inbound test needs a second sender inbox), a just-created inbox cannot send immediately, and `client_id` is the create-inbox idempotency key. A 22-agent adversarial review then confirmed 10 findings — none refuted — and reshaped the security posture before prod: the From-header routing fallback was deleted outright (From is attacker-controlled, and a display-name trick defeated even DMARC-passing mail; the plus-alias tag is now the only routing key), deterministic extraction failures became terminal instead of retry-billing up to 6x, budget-halted receipts recover via a cron after the daily reset instead of silently vanishing, per-user daily extraction caps landed, bidi control characters are stripped from stored item text, and items gained owner-checked dismissal. 25 tests green.
+
+Next: M7 — the matcher (cheap prefilter + LLM adjudication over candidates only) and the recall alert email.
