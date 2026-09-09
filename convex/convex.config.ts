@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import staticHosting from "@convex-dev/static-hosting/convex.config";
 import firecrawl from "@firecrawl/firecrawl-convex/convex.config";
 import workpool from "@convex-dev/workpool/convex.config.js";
+import agentmail from "@agentmail/convex/convex.config";
 
 // App-owned root routing: static hosting is mounted without an httpPrefix and
 // the static catch-all is registered LAST in convex/http.ts, so exact app
@@ -25,6 +26,9 @@ const app = defineApp({
      * addresses (exact) and @domain suffixes. Every outbound send checks it.
      * Only Tony widens it. */
     ALLOWED_RECIPIENTS: v.optional(v.string()),
+    OPENAI_API_KEY: v.optional(v.string()),
+    OPENAI_MODEL_CHEAP: v.optional(v.string()),
+    OPENAI_MODEL_STRONG: v.optional(v.string()),
   },
 });
 
@@ -39,7 +43,13 @@ app.use(firecrawl, {
 });
 
 // Bounded-parallelism pool for Firecrawl scrapes (free tier: 2 concurrent
-// browsers, ~10 scrapes/min). llmPool and emailPool arrive with M5/M6.
+// browsers, ~10 scrapes/min).
 app.use(workpool, { name: "crawlPool" });
+// LLM fan-out (receipt extraction, later remedy/matching). Retries are safe:
+// extraction is idempotent via the emailsProcessed ledger.
+app.use(workpool, { name: "llmPool" });
+// Email state: inboxes/inboundMessages/outboundMessages tables, svix-verified
+// webhook ingest, durable sends. Reads AGENTMAIL_* deployment env directly.
+app.use(agentmail);
 
 export default app;

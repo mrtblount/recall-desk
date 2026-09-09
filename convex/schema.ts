@@ -123,6 +123,49 @@ export default defineSchema({
     lastCrawlAt: v.optional(v.number()),
   }),
 
+  /** A user's watched inventory, extracted from forwarded receipts. */
+  items: defineTable({
+    userId: v.id("users"),
+    sourceMessageId: v.string(),
+    product: v.string(),
+    brand: v.optional(v.string()),
+    model: v.optional(v.string()),
+    upc: v.optional(v.string()),
+    category: v.optional(v.string()),
+    purchaseDate: v.optional(v.string()),
+    retailer: v.optional(v.string()),
+    quantity: v.optional(v.number()),
+    confidence: v.number(),
+    status: v.union(v.literal("active"), v.literal("dismissed")),
+  }).index("by_userId", ["userId"]),
+
+  /** Idempotency ledger for inbound mail — one row per message_id, written
+   * transactionally with any follow-up enqueue. Raw bodies live in the
+   * AgentMail component's inboundMessages table. */
+  emailsProcessed: defineTable({
+    messageId: v.string(),
+    threadId: v.optional(v.string()),
+    userId: v.optional(v.id("users")),
+    fromAddress: v.optional(v.string()),
+    classification: v.union(
+      v.literal("receipt"),
+      v.literal("claim_reply"),
+      v.literal("unknown"),
+      v.literal("unroutable"),
+      v.literal("error"),
+    ),
+    itemIdsCreated: v.array(v.id("items")),
+    error: v.optional(v.string()),
+  }).index("by_messageId", ["messageId"]),
+
+  /** Budget guard singleton (hard constraint #7): daily + total LLM spend.
+   * Updated in the same mutation as every llmUsage insert. */
+  llmBudget: defineTable({
+    day: v.string(),
+    dayUsd: v.number(),
+    totalUsd: v.number(),
+  }),
+
   /** Token/cost ledger for every OpenAI call (budget guard, M6+). */
   llmUsage: defineTable({
     day: v.string(), // YYYY-MM-DD (UTC)

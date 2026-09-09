@@ -9,3 +9,10 @@ export const crawlPool = new Workpool(components.crawlPool, {
   retryActionsByDefault: true,
   defaultRetryBehavior: { maxAttempts: 3, initialBackoffMs: 2_000, base: 3 },
 });
+
+/** OpenAI calls: modest parallelism, retries safe (ledger-idempotent). */
+export const llmPool = new Workpool(components.llmPool, {
+  maxParallelism: 3,
+  retryActionsByDefault: true,
+  defaultRetryBehavior: { maxAttempts: 3, initialBackoffMs: 2_000, base: 3 },
+});

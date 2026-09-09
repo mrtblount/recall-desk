@@ -86,6 +86,7 @@ const Brand = () => (
 function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
   const { signIn, signOut } = useAuthActions();
   const desk = useQuery(api.users.myDesk);
+  const items = useQuery(api.items.myItems, desk ? {} : "skip");
   const [step, setStep] = useState<"email" | "code">("email");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
@@ -213,8 +214,30 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
         )}
       </div>
       <div className="detail-block">
-        <span className="detail-label">Watched items</span>
-        <p>{desk.itemsCount === 0 ? "None yet — receipt ingestion is next to ship." : `${desk.itemsCount} items watched`}</p>
+        <span className="detail-label">Watched items{desk.itemsCount > 0 ? ` · ${desk.itemsCount}` : ""}</span>
+        {items === undefined || items.length === 0 ? (
+          <p>
+            None yet — forward a retailer receipt to your address above and
+            the items appear here within a minute.
+          </p>
+        ) : (
+          <ul className="sample-timeline">
+            {items.slice(0, 12).map((item) => (
+              <li key={item._id}>
+                <span aria-hidden="true">▤</span>
+                <div>
+                  <strong>{item.product}</strong>
+                  <small>
+                    {[item.brand, item.retailer, item.purchaseDate]
+                      .filter(Boolean)
+                      .join(" · ") || "details pending"}
+                    {item.confidence < 0.6 ? " · low confidence" : ""}
+                  </small>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
       <div className="dialog-actions">
         <button className="button button--orange" onClick={onSampleClaim}>See a sample claim <Arrow /></button>

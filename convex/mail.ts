@@ -47,7 +47,11 @@ function authHeaders(): Record<string, string> {
  * account; both deployments then reference the same inbox via env.
  */
 export const provisionSharedInbox = internalAction({
-  args: { username: v.string() },
+  args: {
+    username: v.string(),
+    clientId: v.string(),
+    displayName: v.optional(v.string()),
+  },
   returns: v.object({ inboxId: v.string(), email: v.string() }),
   handler: async (_ctx, args) => {
     const res = await fetch(`${API_BASE}/inboxes`, {
@@ -55,8 +59,9 @@ export const provisionSharedInbox = internalAction({
       headers: authHeaders(),
       body: JSON.stringify({
         username: args.username,
-        display_name: "Recall Desk",
-        client_id: "recall-desk-receipts-v1",
+        display_name: args.displayName ?? "Recall Desk",
+        // client_id is the idempotency key — must be unique per inbox.
+        client_id: args.clientId,
       }),
     });
     if (!res.ok) {
@@ -138,5 +143,35 @@ export const peekMessages = internalAction({
       preview: m.preview ?? null,
       timestamp: m.timestamp,
     }));
+  },
+});
+
+/** Register (idempotently via client_id) the inbound webhook for one
+ * deployment; returns the signing secret to be stored in env. */
+export const registerWebhook = internalAction({
+  args: { url: v.string(), clientId: v.string() },
+  returns: v.object({ webhookId: v.string(), secret: v.string() }),
+  handler: async (_ctx, args) => {
+    const res = await fetch(`${API_BASE}/webhooks`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        url: args.url,
+        client_id: args.clientId,
+        event_types: [
+          "message.received",
+          "message.sent",
+          "message.delivered",
+          "message.bounced",
+          "message.complained",
+          "message.rejected",
+        ],
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(`AgentMail create webhook failed (${res.status}): ${await res.text()}`);
+    }
+    const json = (await res.json()) as { webhook_id: string; secret: string };
+    return { webhookId: json.webhook_id, secret: json.secret };
   },
 });

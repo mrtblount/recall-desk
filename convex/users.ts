@@ -30,11 +30,15 @@ export const myDesk = query({
       base !== null && user.userTag !== undefined
         ? base.replace("@", `+${user.userTag}@`)
         : null;
+    const items = await ctx.db
+      .query("items")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .take(101);
     return {
       email: user.email ?? null,
       userTag: user.userTag ?? null,
       ingestAddress,
-      itemsCount: 0, // items land in M6
+      itemsCount: items.length,
       matchesCount: 0, // matches land in M7
     };
   },
