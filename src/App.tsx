@@ -460,8 +460,11 @@ const EVENT_LABEL: Record<string, string> = {
   sent: "Claim sent",
   send_failed: "Send failed — back to draft",
   delivered: "Delivered to the recipient",
-  bounced: "Bounced",
+  bounced: "Bounced — check the recipient address",
   inbound_reply: "Reply received",
+  unverified_inbound: "⚠ Unverified message on this thread (sender doesn't match the recipient)",
+  completed: "Marked resolved by you",
+  note: "Note",
 };
 
 function ClaimScreen({ matchId }: { matchId: Id<"matches"> }) {
@@ -469,6 +472,7 @@ function ClaimScreen({ matchId }: { matchId: Id<"matches"> }) {
   const draftClaim = useAction(api.claims.draftClaim);
   const editDraft = useMutation(api.claims.editClaimDraft);
   const approve = useMutation(api.claims.approveClaim);
+  const markCompleted = useMutation(api.claims.markClaimCompleted);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [recipient, setRecipient] = useState<string | null>(null);
@@ -536,15 +540,16 @@ function ClaimScreen({ matchId }: { matchId: Id<"matches"> }) {
             <span className="detail-label">Subject</span>
             <div className="search-row"><div className="search-box">
               <label htmlFor="claim-subject" className="sr-only">Subject</label>
-              <input id="claim-subject" value={subjectValue} onChange={(e) => setSubject(e.target.value)} />
+              <input id="claim-subject" maxLength={200} value={subjectValue} onChange={(e) => setSubject(e.target.value)} />
             </div></div>
           </div>
           <div className="detail-block">
-            <span className="detail-label">Message — drafted by AI from your data; edit anything</span>
+            <span className="detail-label">Message — drafted by AI from your data; edit anything ({bodyValue.length}/4000)</span>
             <textarea
               aria-label="Claim email body"
               value={bodyValue}
               onChange={(e) => setBody(e.target.value)}
+              maxLength={4000}
               rows={10}
               style={{ width: "100%", font: "inherit", fontSize: 14, padding: 10, border: "1px solid var(--line)", borderRadius: 5, background: "var(--card, #fff)", color: "inherit", resize: "vertical" }}
             />
@@ -588,6 +593,11 @@ function ClaimScreen({ matchId }: { matchId: Id<"matches"> }) {
         </>
       ) : (
         <>
+          {(claim.state === "approved" || claim.state === "sending") && (
+            <p className="dialog-muted" role="status">
+              {claim.state === "approved" ? "Queued to send…" : "Sending…"}
+            </p>
+          )}
           <div className="detail-block">
             <span className="detail-label">To</span>
             <p>{claim.recipient}</p>
@@ -596,6 +606,16 @@ function ClaimScreen({ matchId }: { matchId: Id<"matches"> }) {
             <span className="detail-label">Subject</span>
             <p>{claim.draftSubject}</p>
           </div>
+          {claim.state === "replied" && (
+            <div className="dialog-actions">
+              <button
+                className="button button--outline"
+                onClick={() => void markCompleted({ claimId: claim._id })}
+              >
+                Mark resolved
+              </button>
+            </div>
+          )}
         </>
       )}
       {events.length > 0 && (

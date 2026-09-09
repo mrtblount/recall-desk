@@ -2,7 +2,7 @@
  * source. The extracted claim_url becomes a primary CTA in a safety flow —
  * a parked domain or injected page text must never survive into it. */
 
-function baseDomain(hostname: string): string {
+export function baseDomain(hostname: string): string {
   const parts = hostname.toLowerCase().split(".");
   return parts.slice(-2).join(".");
 }

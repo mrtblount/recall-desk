@@ -26,4 +26,9 @@ crons.interval(
   {},
 );
 
+// Claims stuck by a died scheduler action recover (approved->draft after
+// 10 min); ambiguous 'sending' states get a warning note, never a silent
+// duplicate-send path.
+crons.interval("recover stuck claims", { minutes: 15 }, internal.claims.recoverStuckClaims, {});
+
 export default crons;

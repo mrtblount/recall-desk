@@ -201,6 +201,7 @@ export default defineSchema({
     state: v.union(
       v.literal("draft"),
       v.literal("approved"),
+      v.literal("sending"),
       v.literal("sent"),
       v.literal("delivered"),
       v.literal("replied"),
@@ -223,6 +224,9 @@ export default defineSchema({
       v.literal("delivered"),
       v.literal("bounced"),
       v.literal("inbound_reply"),
+      v.literal("unverified_inbound"),
+      v.literal("completed"),
+      v.literal("note"),
     ),
     payload: v.optional(v.any()),
   }).index("by_claimId", ["claimId"]),
