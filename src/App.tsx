@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useAuthActions } from "@convex-dev/auth/react";
-import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
+import { useAction, useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { api } from "../convex/_generated/api";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import heroCollage from "./assets/hero-collage.webp";
@@ -84,7 +84,7 @@ const Brand = () => (
   </a>
 );
 
-function DeskScreen({ onSampleClaim, onOpenRemedy }: { onSampleClaim: () => void; onOpenRemedy: (matchId: Id<"matches">) => void }) {
+function DeskScreen({ onSampleClaim, onOpenRemedy, onOpenClaim }: { onSampleClaim: () => void; onOpenRemedy: (matchId: Id<"matches">) => void; onOpenClaim: (matchId: Id<"matches">) => void }) {
   const { signIn, signOut } = useAuthActions();
   const desk = useQuery(api.users.myDesk);
   const items = useQuery(api.items.myItems, desk ? {} : "skip");
@@ -245,6 +245,10 @@ function DeskScreen({ onSampleClaim, onOpenRemedy }: { onSampleClaim: () => void
                     {" · "}
                     <button className="text-link" style={{ font: "inherit", padding: 0, border: 0, background: "none", cursor: "pointer" }} onClick={() => onOpenRemedy(match._id)}>
                       remedy checklist →
+                    </button>
+                    {" · "}
+                    <button className="text-link" style={{ font: "inherit", padding: 0, border: 0, background: "none", cursor: "pointer" }} onClick={() => onOpenClaim(match._id)}>
+                      {match.state === "claim_sent" || match.state === "acknowledged" ? "claim timeline →" : "file a claim →"}
                     </button>
                     {match.state === "notified" ? " · alerted by email" : ""}
                   </small>
@@ -449,11 +453,185 @@ function RemedyScreen({ matchId, userEmail }: { matchId: Id<"matches">; userEmai
   );
 }
 
+const EVENT_LABEL: Record<string, string> = {
+  drafted: "Draft written",
+  edited: "Draft edited",
+  approved: "Approved by you",
+  sent: "Claim sent",
+  send_failed: "Send failed — back to draft",
+  delivered: "Delivered to the recipient",
+  bounced: "Bounced",
+  inbound_reply: "Reply received",
+};
+
+function ClaimScreen({ matchId }: { matchId: Id<"matches"> }) {
+  const data = useQuery(api.claims.claimForMatch, { matchId });
+  const draftClaim = useAction(api.claims.draftClaim);
+  const editDraft = useMutation(api.claims.editClaimDraft);
+  const approve = useMutation(api.claims.approveClaim);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [recipient, setRecipient] = useState<string | null>(null);
+  const [subject, setSubject] = useState<string | null>(null);
+  const [body, setBody] = useState<string | null>(null);
+
+  if (data === undefined) return <p className="dialog-muted">Loading…</p>;
+
+  if (data === null) {
+    return (
+      <>
+        <h2 id="dialog-title">Your claim,<br />ready to review.</h2>
+        <p>
+          We'll draft the claim email from your receipt, the official recall,
+          and the manufacturer's remedy page. Nothing is sent until you
+          approve it.
+        </p>
+        <div className="dialog-actions">
+          <button
+            className="button button--orange"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              setError("");
+              try {
+                await draftClaim({ matchId });
+              } catch {
+                setError("Couldn't draft right now — try again in a moment.");
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            {busy ? "Drafting…" : "Draft my claim"} <Arrow />
+          </button>
+        </div>
+        {error && <p className="dialog-muted" role="alert">{error}</p>}
+      </>
+    );
+  }
+
+  const { claim, events } = data;
+  const editable = claim.state === "draft";
+  const recipientValue = recipient ?? claim.recipient;
+  const subjectValue = subject ?? claim.draftSubject;
+  const bodyValue = body ?? claim.draftBody;
+  const dirty =
+    recipientValue !== claim.recipient ||
+    subjectValue !== claim.draftSubject ||
+    bodyValue !== claim.draftBody;
+
+  return (
+    <>
+      <h2 id="dialog-title">{editable ? <>Review it.<br />Then send it.</> : <>Your claim<br />timeline.</>}</h2>
+      {editable ? (
+        <>
+          <div className="detail-block">
+            <span className="detail-label">To</span>
+            <div className="search-row"><div className="search-box">
+              <label htmlFor="claim-to" className="sr-only">Recipient</label>
+              <input id="claim-to" type="email" placeholder="claims contact email" value={recipientValue} onChange={(e) => setRecipient(e.target.value)} />
+            </div></div>
+          </div>
+          <div className="detail-block">
+            <span className="detail-label">Subject</span>
+            <div className="search-row"><div className="search-box">
+              <label htmlFor="claim-subject" className="sr-only">Subject</label>
+              <input id="claim-subject" value={subjectValue} onChange={(e) => setSubject(e.target.value)} />
+            </div></div>
+          </div>
+          <div className="detail-block">
+            <span className="detail-label">Message — drafted by AI from your data; edit anything</span>
+            <textarea
+              aria-label="Claim email body"
+              value={bodyValue}
+              onChange={(e) => setBody(e.target.value)}
+              rows={10}
+              style={{ width: "100%", font: "inherit", fontSize: 14, padding: 10, border: "1px solid var(--line)", borderRadius: 5, background: "var(--card, #fff)", color: "inherit", resize: "vertical" }}
+            />
+          </div>
+          <div className="dialog-actions">
+            <button
+              className="button button--orange"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                setError("");
+                try {
+                  if (dirty) {
+                    await editDraft({ claimId: claim._id, recipient: recipientValue, draftSubject: subjectValue, draftBody: bodyValue });
+                  }
+                  await approve({ claimId: claim._id });
+                } catch {
+                  setError("Couldn't send — check the recipient address and try again.");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {busy ? "Sending…" : "Approve & send"} <Arrow />
+            </button>
+            {dirty && (
+              <button
+                className="button button--outline"
+                disabled={busy}
+                onClick={() => void editDraft({ claimId: claim._id, recipient: recipientValue, draftSubject: subjectValue, draftBody: bodyValue })}
+              >
+                Save draft
+              </button>
+            )}
+          </div>
+          {error && <p className="dialog-muted" role="alert">{error}</p>}
+          <p className="dialog-muted">
+            Nothing sends without your approval. During the hackathon, sends
+            are restricted to owner-controlled addresses.
+          </p>
+        </>
+      ) : (
+        <>
+          <div className="detail-block">
+            <span className="detail-label">To</span>
+            <p>{claim.recipient}</p>
+          </div>
+          <div className="detail-block">
+            <span className="detail-label">Subject</span>
+            <p>{claim.draftSubject}</p>
+          </div>
+        </>
+      )}
+      {events.length > 0 && (
+        <div className="detail-block">
+          <span className="detail-label">Timeline</span>
+          <ul className="sample-timeline" aria-live="polite">
+            {events.map((event) => (
+              <li key={event._id}>
+                <span aria-hidden="true">{event.kind === "inbound_reply" ? "↩" : "✓"}</span>
+                <div>
+                  <strong>{EVENT_LABEL[event.kind] ?? event.kind}</strong>
+                  <small>
+                    {new Date(event._creationTime).toLocaleString()}
+                    {event.kind === "inbound_reply" && (event.payload as { preview?: string } | undefined)?.preview
+                      ? ` — "${String((event.payload as { preview?: string }).preview).slice(0, 140)}"`
+                      : ""}
+                    {event.kind === "send_failed" && (event.payload as { error?: string } | undefined)?.error
+                      ? ` — ${String((event.payload as { error?: string }).error).slice(0, 120)}`
+                      : ""}
+                  </small>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
+  );
+}
+
 type Screen =
   | { kind: "welcome" } | { kind: "desk" } | { kind: "claim" } | { kind: "approve" }
   | { kind: "about" } | { kind: "privacy" } | { kind: "sources" }
   | { kind: "recall"; recall: Recall }
-  | { kind: "remedy"; matchId: Id<"matches"> };
+  | { kind: "remedy"; matchId: Id<"matches"> }
+  | { kind: "claimReal"; matchId: Id<"matches"> };
 
 function RecallCard({ recall, onShow }: { recall: Recall; onShow: () => void }) {
   return (
@@ -604,6 +782,7 @@ export default function App() {
     screen?.kind === "recall"
       ? `Official ${SOURCE_LABEL[screen.recall.source]} ${noticeKind(screen.recall)} · ${fmtDate(screen.recall.publishedAt)}${screen.recall.status === "closed" ? " · CLOSED" : screen.recall.status === "expanded" ? " · EXPANDED" : ""}`
       : screen?.kind === "remedy" ? "Remedy checklist"
+      : screen?.kind === "claimReal" ? "Your claim · approval required"
       : screen?.kind === "welcome" ? "The personal desk · Preview"
       : screen?.kind === "desk" ? "My desk"
       : screen?.kind === "claim" ? "Your approval comes first · Sample preview"
@@ -617,6 +796,8 @@ export default function App() {
     dialogBody = <RecallDetail recall={screen.recall} onWelcome={open("welcome")} />;
   } else if (screen?.kind === "remedy") {
     dialogBody = <RemedyScreenWrapper matchId={screen.matchId} />;
+  } else if (screen?.kind === "claimReal") {
+    dialogBody = <ClaimScreen matchId={screen.matchId} />;
   } else if (screen?.kind === "welcome") {
     dialogBody = (
       <>
@@ -639,6 +820,7 @@ export default function App() {
       <DeskScreen
         onSampleClaim={open("claim")}
         onOpenRemedy={(matchId) => setScreen({ kind: "remedy", matchId })}
+        onOpenClaim={(matchId) => setScreen({ kind: "claimReal", matchId })}
       />
     );
   } else if (screen?.kind === "claim") {

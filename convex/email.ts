@@ -3,6 +3,7 @@ import { vOnCompleteArgs } from "@convex-dev/workpool";
 import { v } from "convex/values";
 import { components, internal } from "./_generated/api";
 import { env, internalMutation, internalQuery } from "./_generated/server";
+import { routeClaimReply } from "./claims";
 import { aliasTag, bareAddress, RECEIPT_HINT_RE } from "./emailParse";
 import { llmPool } from "./pools";
 import schema from "./schema";
@@ -11,6 +12,7 @@ import schema from "./schema";
  * (via the component's callback workpool) on every inbound message. */
 export const agentmail: AgentMail = new AgentMail(components.agentmail, {
   onMessageReceived: internal.email.onMessageReceived,
+  onEvent: internal.claims.onMailEvent,
 });
 
 /** Per-user extraction budget (spam brake): beyond this many receipt
@@ -57,6 +59,29 @@ export const onMessageReceived = internalMutation({
     if (existing !== null) return null;
 
     const from = bareAddress(asString(m.from));
+
+    // Claim-thread replies route by threadId BEFORE any receipt logic —
+    // a manufacturer reply advances the claim timeline.
+    const threadId = asString(m.thread_id);
+    if (threadId !== "") {
+      const claimId = await routeClaimReply(ctx, threadId, {
+        from,
+        preview: asString(m.preview),
+        text: asString(m.text).slice(0, 500),
+      });
+      if (claimId !== null) {
+        await ctx.db.insert("emailsProcessed", {
+          messageId,
+          inboxId,
+          threadId,
+          fromAddress: from || undefined,
+          classification: "claim_reply",
+          itemIdsCreated: [],
+        });
+        console.log(`inbound ${messageId.slice(0, 24)}…: claim reply threaded`);
+        return null;
+      }
+    }
     const recipients = [
       ...(Array.isArray(m.to) ? m.to : []),
       ...(Array.isArray(m.cc) ? m.cc : []),

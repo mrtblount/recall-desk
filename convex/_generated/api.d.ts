@@ -10,6 +10,7 @@
 
 import type * as ai from "../ai.js";
 import type * as auth from "../auth.js";
+import type * as claims from "../claims.js";
 import type * as crawl_cpsc from "../crawl/cpsc.js";
 import type * as crawl_detail from "../crawl/detail.js";
 import type * as crawl_extract from "../crawl/extract.js";
@@ -41,6 +42,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   ai: typeof ai;
   auth: typeof auth;
+  claims: typeof claims;
   "crawl/cpsc": typeof crawl_cpsc;
   "crawl/detail": typeof crawl_detail;
   "crawl/extract": typeof crawl_extract;

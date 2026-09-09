@@ -187,6 +187,46 @@ export default defineSchema({
     .index("by_recallId", ["recallId"])
     .index("by_state", ["state"]),
 
+  /** A claim against one match: drafted -> approved -> sent -> delivered ->
+   * replied -> completed. threadId keys inbound reply routing. */
+  claims: defineTable({
+    matchId: v.id("matches"),
+    userId: v.id("users"),
+    channel: v.union(v.literal("email"), v.literal("portal_checklist")),
+    recipient: v.string(),
+    draftSubject: v.string(),
+    draftBody: v.string(),
+    threadId: v.optional(v.string()),
+    sentMessageId: v.optional(v.string()),
+    state: v.union(
+      v.literal("draft"),
+      v.literal("approved"),
+      v.literal("sent"),
+      v.literal("delivered"),
+      v.literal("replied"),
+      v.literal("completed"),
+    ),
+  })
+    .index("by_matchId", ["matchId"])
+    .index("by_userId", ["userId"])
+    .index("by_threadId", ["threadId"]),
+
+  /** Append-only claim timeline. */
+  claimEvents: defineTable({
+    claimId: v.id("claims"),
+    kind: v.union(
+      v.literal("drafted"),
+      v.literal("edited"),
+      v.literal("approved"),
+      v.literal("sent"),
+      v.literal("send_failed"),
+      v.literal("delivered"),
+      v.literal("bounced"),
+      v.literal("inbound_reply"),
+    ),
+    payload: v.optional(v.any()),
+  }).index("by_claimId", ["claimId"]),
+
   /** Idempotency ledger for inbound mail — one row per message_id, written
    * transactionally with any follow-up enqueue. Raw bodies live in the
    * AgentMail component's inboundMessages table. */
