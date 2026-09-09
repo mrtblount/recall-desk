@@ -9,10 +9,10 @@
 - **Convex deployment:** https://tremendous-bullfrog-311.convex.cloud
 - **Components:** @convex-dev/static-hosting, @firecrawl/firecrawl-convex, @convex-dev/workpool (crawlPool)
 - **Convex features:** schema, tables, indexes, full-text search index, queries, mutations, actions, internal functions, paginated queries, realtime queries, HTTP actions, crons, scheduled functions (workpool), components, tests (convex-test)
-- **Auth:** none
+- **Auth:** Convex Auth
 - **AI models:** none
 - **Started:** 2026-08-30T06:30:40Z
-- **Last updated:** 2026-09-08T00:25:19Z
+- **Last updated:** 2026-09-09T00:36:45Z
 
 ## What this is
 
@@ -77,3 +77,10 @@ Session M4 + a design milestone, in one evening.
 **The reviews.** A 22-agent adversarial pass confirmed 8 findings before the prod deploy, including: closed recalls could never reopen (mappers now assert the active state they know, and an explicit active override reopens a row); the every-run `lastSeenAt` patch at 1,500-row scale would have re-pushed every open board subscription (now touched at most every 12 h); and the detail dialog presented terminated recalls as live safety guidance (closed rows now open with "This recall is closed." and reference framing; FSIS public health alerts are labeled as alerts; FDA rows show their recall number as a lookup path). Revision rows are now written only when content actually changed, so the status-migration run produced zero junk revisions. 20 tests green.
 
 Next: M5 — auth and the user shell, with the shared AgentMail receipts inbox (free plan allows three inboxes total, so sender-address routing replaces per-user inboxes).
+
+### 2026-09-08 - 755e0e0
+Session M5: accounts are real. Convex Auth v1 (beta) with a custom 8-digit email-OTP provider — 15-minute expiry set explicitly, codes delivered through AgentMail's REST API once the key is connected, and a dev-only fallback (gated behind an env flag set exclusively on the dev deployment) that logs codes so the whole flow runs before the mailer exists. The Session-0 routing decision paid off on schedule: `auth.addHttpRoutes` registers `/.well-known/openid-configuration` and `/.well-known/jwks.json` at the deployment root, verified live on production — under the static-hosting setup default (`httpPrefix: "/api"`) token validation would have failed here. Each new user is stamped with an immutable 6-character tag (deterministic, collision-checked against an index) that becomes their dedicated ingest alias (`receipts+tag@…`) on the shared AgentMail inbox — dedicated address per user, one inbox bill. "My desk" is now a real surface: email → code sign-in in the dialog, signed-in desk showing the reserved forwarding alias (honestly labeled as awaiting the inbox), sign out. Auth v1 came in far under its half-day timebox; the Clerk fallback stayed on the shelf.
+
+An 18-agent security review confirmed 7 findings pre-deploy, the sharpest two: the unconfigured-mailer fallback failed open — a production visitor would have been told "we sent a code" while the code sat in dashboard-only logs (now: prod throws and the UI says plainly that email delivery is still being connected, which is exactly what the live site shows today); and email normalization lived only in the client while `signIn` is a public action, so a directly-invoked mixed-case email would have minted a duplicate account with its own ingest alias (now enforced server-side in the provider). Also fixed from review: sign-out no longer strands a stale code screen, the code step gained a real resend button, and every dialog that still claimed "accounts are opening soon" was corrected — they're open. Verified end to end in a real browser on dev (sign-up through to the tagged desk) and on production (honest unconfigured-mailer behavior). 22 tests green.
+
+Next: connect the AgentMail key — one shared receipts inbox, plus-addressing smoke test, live OTP delivery — then M6: the inbound webhook and receipt-to-items extraction.
