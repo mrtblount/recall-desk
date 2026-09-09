@@ -1,6 +1,7 @@
 import { Email } from "@convex-dev/auth/providers/Email";
 import { convexAuth } from "@convex-dev/auth/server";
 import { env, type MutationCtx } from "./_generated/server";
+import { assertAllowedRecipient } from "./mail";
 import { userTagFromSeed } from "./tags";
 
 /**
@@ -37,6 +38,10 @@ export const recallOtp = Email({
       // Fail honest: never let the UI claim "code sent" when nothing was.
       throw new Error("sign-in email delivery is not configured yet");
     }
+    // Hard constraint #6: no outbound mail to non-Tony addresses until the
+    // allowlist is deliberately widened. Sign-ups for other addresses fail
+    // with the honest "couldn't send" path.
+    assertAllowedRecipient(email);
     const res = await fetch(
       `https://api.agentmail.to/v0/inboxes/${encodeURIComponent(inboxId)}/messages/send`,
       {

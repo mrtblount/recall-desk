@@ -34,6 +34,7 @@ type Env = {
   readonly AGENTMAIL_OTP_INBOX_ID: string | undefined;
   readonly AGENTMAIL_RECEIPTS_ADDRESS: string | undefined;
   readonly AGENTMAIL_WEBHOOK_SECRET: string | undefined;
+  readonly ALLOWED_RECIPIENTS: string | undefined;
   readonly FIRECRAWL_API_KEY: string;
   readonly FIRECRAWL_WEBHOOK_SECRET: string | undefined;
   readonly OTP_DEV_FALLBACK: string | undefined;

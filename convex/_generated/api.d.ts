@@ -18,6 +18,7 @@ import type * as crawl_fsis from "../crawl/fsis.js";
 import type * as crons from "../crons.js";
 import type * as health from "../health.js";
 import type * as http from "../http.js";
+import type * as mail from "../mail.js";
 import type * as pools from "../pools.js";
 import type * as recalls from "../recalls.js";
 import type * as tags from "../tags.js";
@@ -40,6 +41,7 @@ declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   health: typeof health;
   http: typeof http;
+  mail: typeof mail;
   pools: typeof pools;
   recalls: typeof recalls;
   tags: typeof tags;
