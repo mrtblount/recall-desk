@@ -12,7 +12,7 @@
 - **Auth:** Convex Auth
 - **AI models:** gpt-5.6-luna (receipt extraction; terra staged for escalation)
 - **Started:** 2026-08-30T06:30:40Z
-- **Last updated:** 2026-09-09T02:49:34Z
+- **Last updated:** 2026-09-09T04:31:11Z
 
 ## What this is
 
@@ -103,3 +103,10 @@ Session M7: the matcher — and the product's promise held to five seconds. Two 
 The adversarial review (22 agents, 10 findings confirmed, none refuted) then attacked the part a passing demo hides: scale and failure paths. The recall→items sweep had been a `take(1000)` scan that would only ever see the thousand oldest items — the "emailed the day something you own is recalled" promise would have silently died for item #1001 — so the sweep now runs inverted through a dedicated items search index and scales with hits, not table size. A UPC lookup table now guarantees a terse receipt with a listed UPC can never be gated out by title tokens. Alerts became state-driven with a 30-minute recovery cron (transient send failures, budget-halted adjudications, and sweep-capped recalls all re-drive instead of stranding), and the alert email itself was made honest: confidence-gated at 70%, "appears to match — confirm your model against the official notice," official links only, with the extracted remedy link kept on the desk where its provenance is disclosed. Day's total LLM spend across extraction and matching: about a tenth of a cent.
 
 Next: M8 — the Firecrawl remedy-page crawl on match and procedure extraction (the Louisville-portal showcase).
+
+### 2026-09-09 - (late) 
+Session M8: the remedy page becomes a checklist. When a match records, the manufacturer's remedy portal is Firecrawl-scraped in the same transaction (`waitFor: 3000` for JavaScript portals), the procedure is extracted into strict structure — summary, ordered steps, required fields, claim link, deadline, options, under "report ONLY what the page says" — and the desk renders it as a checklist prefilled from the user's own receipt: model number, email, purchase date, UPC filled in; names, serials, addresses, and photos deliberately left to the human (the prefiller never guesses — it's a pure, tested function). The brief's flagship Firecrawl proof was reproduced live through this exact production code path: the Louisville attic-stairway portal serves a plain HTTP client **57 characters** — "You need to enable JavaScript to run this app" — while Firecrawl renders **2,501 characters**, from which the extractor structured 4 steps and 8 required fields. The real matched portals worked the same way: the power-bank claim portal rendered as a faithful 6-step checklist (destruction-code markings, battery-disposal rules and all), verified in a browser.
+
+The adversarial review (22 agents, 10 confirmed, 0 refuted) then attacked the new trust boundary — third-party page content becoming clickable CTAs in a safety flow — and won its keep again: extracted claim links now pass a grounded sanitizer (must appear verbatim in the scraped page AND share the portal's registrable domain, so neither a hallucination nor an injected phishing URL can become the orange button; verified live: a real submission-form URL survived, an ungrounded one was stripped to a safe fallback). Bot-wall pages are detected and never saved (one Cloudflare challenge would otherwise have marked a portal "unreadable" forever), failed reads retry after cool-down, healed remedy URLs re-scrape, a 7-day TTL keeps deadlines from going stale, extraction saves are content-hash-guarded against clobbering, orphaned storage blobs are cleaned, and closed recalls demote the whole checklist to labeled historical reference. 34 tests green.
+
+Next: M9 — claim drafting, approval, allowlist-guarded send, and inbound replies threading onto the claim timeline. Then the M10 full-loop gate.
