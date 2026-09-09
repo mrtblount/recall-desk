@@ -18,6 +18,9 @@ const app = defineApp({
     AGENTMAIL_WEBHOOK_SECRET: v.optional(v.string()),
     AGENTMAIL_OTP_INBOX_ID: v.optional(v.string()),
     AGENTMAIL_RECEIPTS_ADDRESS: v.optional(v.string()),
+    /** "1" ONLY on dev deployments: log OTP codes instead of failing when
+     * the mailer is unconfigured. Never set on prod. */
+    OTP_DEV_FALLBACK: v.optional(v.string()),
   },
 });
 

@@ -90,6 +90,7 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   if (desk === undefined) {
     return <p className="dialog-muted">Loading your desk…</p>;
@@ -109,7 +110,7 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
         await signIn("recall-otp", { email: normalized });
         setStep("code");
       } catch {
-        setError("Could not send a code to that address. Check it and try again.");
+        setError("We couldn't send a code right now — email delivery may still be connecting. Check the address and try again soon.");
       } finally {
         setBusy(false);
       }
@@ -124,7 +125,7 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
         await signIn("recall-otp", { email, code: String(code ?? "").trim() });
         // success re-renders via myDesk
       } catch {
-        setError("That code didn't match (or expired). Request a fresh one.");
+        setError("That code didn't match (or expired). Resend a fresh one below.");
       } finally {
         setBusy(false);
       }
@@ -162,10 +163,31 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
               <button className="button button--orange" type="submit" disabled={busy}>
                 {busy ? "Checking…" : "Sign in"} <Arrow />
               </button>
-              <button className="button button--outline" type="button" onClick={() => { setStep("email"); setError(""); }}>
+              <button
+                className="button button--outline"
+                type="button"
+                disabled={busy}
+                onClick={async () => {
+                  setError("");
+                  setNotice("");
+                  setBusy(true);
+                  try {
+                    await signIn("recall-otp", { email });
+                    setNotice("Code re-sent — check your inbox.");
+                  } catch {
+                    setError("Couldn't resend right now. Wait a moment and try again.");
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Resend code
+              </button>
+              <button className="button button--outline" type="button" onClick={() => { setStep("email"); setError(""); setNotice(""); }}>
                 Different email
               </button>
             </div>
+            {notice && <p className="dialog-muted" role="status">{notice}</p>}
             {error && <p className="dialog-muted" role="alert">{error}</p>}
           </form>
         )}
@@ -185,20 +207,20 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
         ) : (
           <p>
             <strong>Reserved for you (tag: {desk.userTag ?? "…"})</strong> — the
-            receipts inbox is activating; your personal forwarding address
-            appears here the moment it's live.
+            receipts inbox isn't connected yet; your personal forwarding
+            address will appear here once it is.
           </p>
         )}
       </div>
       <div className="detail-block">
         <span className="detail-label">Watched items</span>
-        <p>{desk.itemsCount === 0 ? "None yet — receipt ingestion opens next." : `${desk.itemsCount} items watched`}</p>
+        <p>{desk.itemsCount === 0 ? "None yet — receipt ingestion is next to ship." : `${desk.itemsCount} items watched`}</p>
       </div>
       <div className="dialog-actions">
         <button className="button button--orange" onClick={onSampleClaim}>See a sample claim <Arrow /></button>
-        <button className="button button--outline" onClick={() => void signOut()}>Sign out</button>
+        <button className="button button--outline" onClick={() => { setStep("email"); setError(""); setNotice(""); void signOut(); }}>Sign out</button>
       </div>
-      <p className="dialog-muted">Recall matching against your items goes live this build cycle — you'll get an email the day something you own is recalled.</p>
+      <p className="dialog-muted">Recall matching is in development — when it launches, you'll be emailed if something you own is recalled.</p>
     </>
   );
 }
@@ -373,10 +395,10 @@ export default function App() {
           <li><span>03</span><div><strong>Review and approve your claim</strong><small>You stay in control of what gets sent.</small></div></li>
         </ol>
         <div className="dialog-actions">
-          <button className="button button--orange" onClick={open("claim")}>Explore a sample claim <Arrow /></button>
-          <button className="button button--outline" onClick={close}>Browse recalls</button>
+          <button className="button button--orange" onClick={open("desk")}>Create my desk <Arrow /></button>
+          <button className="button button--outline" onClick={open("claim")}>Explore a sample claim</button>
         </div>
-        <p className="dialog-muted">Personal monitoring is in development — accounts are opening soon. This preview does not create an account or collect receipts.</p>
+        <p className="dialog-muted">Desks are open today (email sign-in, no password). Receipt ingestion is being connected — your forwarding address appears on your desk the moment it's live.</p>
       </>
     );
   } else if (screen?.kind === "desk") {
@@ -407,7 +429,7 @@ export default function App() {
         <p className="dialog-muted">In the finished product, you confirm the matching model and provide the evidence the manufacturer requires before approving your claim.</p>
         <div className="dialog-actions">
           <button className="button button--orange" onClick={open("approve")}>Preview approval <Arrow /></button>
-          <button className="button button--outline" onClick={open("desk")}>Back to sample desk</button>
+          <button className="button button--outline" onClick={open("desk")}>Open my desk</button>
         </div>
       </>
     );
@@ -417,7 +439,7 @@ export default function App() {
         <svg className="approved-icon" aria-hidden="true"><use href="#i-check" /></svg>
         <h2 id="dialog-title">You're in control.</h2>
         <p>Approval previewed. No claim was sent.</p>
-        <p className="dialog-muted">Once accounts open, an approved claim and the manufacturer's replies will appear on your claim timeline.</p>
+        <p className="dialog-muted">Once receipts are flowing, an approved claim and the manufacturer's replies will appear on your claim timeline.</p>
         <div className="dialog-actions" style={{ justifyContent: "center" }}>
           <button className="button button--orange" onClick={close}>Back to recalls <Arrow /></button>
         </div>

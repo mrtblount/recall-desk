@@ -19,13 +19,23 @@ export const recallOtp = Email({
     return String(random % 100_000_000).padStart(8, "0");
   },
   async sendVerificationRequest({ identifier: email, token }) {
+    // Server-side identity enforcement: signIn is a public action, so client
+    // normalization is bypassable — and Auth v1 stores providerAccountId
+    // raw, so "Foo@x.com" would mint a duplicate account with its own tag.
+    if (email !== email.trim().toLowerCase()) {
+      throw new Error("email must be lowercase");
+    }
     const apiKey = env.AGENTMAIL_API_KEY;
     const inboxId = env.AGENTMAIL_OTP_INBOX_ID;
     if (!apiKey || !inboxId) {
-      console.warn(
-        `[dev-otp] AgentMail not configured — sign-in code for this attempt: ${token}`,
-      );
-      return;
+      if (env.OTP_DEV_FALLBACK === "1") {
+        console.warn(
+          `[dev-otp] AgentMail not configured — sign-in code for this attempt: ${token}`,
+        );
+        return;
+      }
+      // Fail honest: never let the UI claim "code sent" when nothing was.
+      throw new Error("sign-in email delivery is not configured yet");
     }
     const res = await fetch(
       `https://api.agentmail.to/v0/inboxes/${encodeURIComponent(inboxId)}/messages/send`,
