@@ -1,3 +1,4 @@
+import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
@@ -50,6 +51,26 @@ export const recallDoc = v.object({
 // land with auth in M5/M6 — items/matches/claims need Id<"users">, which does
 // not exist until authTables is added. Logged as a Session M2 decision.
 export default defineSchema({
+  ...authTables,
+
+  /** Convex Auth's users table, extended with Recall Desk fields. The base
+   * fields/indexes must match authTables.users exactly. */
+  users: defineTable({
+    name: v.optional(v.string()),
+    image: v.optional(v.string()),
+    email: v.optional(v.string()),
+    emailVerificationTime: v.optional(v.number()),
+    phone: v.optional(v.string()),
+    phoneVerificationTime: v.optional(v.number()),
+    isAnonymous: v.optional(v.boolean()),
+    /** Short unique tag baked into the user's ingest alias
+     * (receipts+<tag>@…). Stamped at signup, immutable. */
+    userTag: v.optional(v.string()),
+  })
+    .index("email", ["email"])
+    .index("phone", ["phone"])
+    .index("by_userTag", ["userTag"]),
+
   /** Data-driven crawler registry (M3+): crons iterate enabled sources. */
   feedSources: defineTable({
     key: v.string(),

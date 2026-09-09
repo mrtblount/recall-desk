@@ -13,10 +13,14 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@agentmail/convex": "^0.1.0",
+    "@auth/core": "^0.41.1",
+    "@convex-dev/auth": "^0.0.95",
     "@convex-dev/static-hosting": "^0.2.1",
     "@convex-dev/workpool": "^0.4.11",
     "@firecrawl/firecrawl-convex": "^0.1.1",
     "convex": "^1.45.0",
+    "convex-helpers": "^0.1.124",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },

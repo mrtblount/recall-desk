@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as auth from "../auth.js";
 import type * as crawl_cpsc from "../crawl/cpsc.js";
 import type * as crawl_detail from "../crawl/detail.js";
 import type * as crawl_extract from "../crawl/extract.js";
@@ -19,6 +20,8 @@ import type * as health from "../health.js";
 import type * as http from "../http.js";
 import type * as pools from "../pools.js";
 import type * as recalls from "../recalls.js";
+import type * as tags from "../tags.js";
+import type * as users from "../users.js";
 
 import type {
   ApiFromModules,
@@ -27,6 +30,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  auth: typeof auth;
   "crawl/cpsc": typeof crawl_cpsc;
   "crawl/detail": typeof crawl_detail;
   "crawl/extract": typeof crawl_extract;
@@ -38,6 +42,8 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   pools: typeof pools;
   recalls: typeof recalls;
+  tags: typeof tags;
+  users: typeof users;
 }>;
 
 /**

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useAuthActions } from "@convex-dev/auth/react";
 import { usePaginatedQuery, useQuery } from "convex/react";
 import { api } from "../convex/_generated/api";
 import type { Doc } from "../convex/_generated/dataModel";
@@ -81,6 +82,126 @@ const Brand = () => (
     <svg className="brand-mark" aria-hidden="true"><use href="#brand-symbol" /></svg>Recall Desk.
   </a>
 );
+
+function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
+  const { signIn, signOut } = useAuthActions();
+  const desk = useQuery(api.users.myDesk);
+  const [step, setStep] = useState<"email" | "code">("email");
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  if (desk === undefined) {
+    return <p className="dialog-muted">Loading your desk…</p>;
+  }
+
+  if (desk === null) {
+    // Signed out: email -> code, both through Convex Auth.
+    const sendCode = async (e: FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      setError("");
+      setBusy(true);
+      try {
+        // Convex Auth does NOT normalize case — do it here, identically on
+        // both steps, or Foo@x.com and foo@x.com become different accounts.
+        const normalized = email.trim().toLowerCase();
+        setEmail(normalized);
+        await signIn("recall-otp", { email: normalized });
+        setStep("code");
+      } catch {
+        setError("Could not send a code to that address. Check it and try again.");
+      } finally {
+        setBusy(false);
+      }
+    };
+    const verifyCode = async (e: FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      const form = e.currentTarget;
+      const code = new FormData(form).get("code");
+      setError("");
+      setBusy(true);
+      try {
+        await signIn("recall-otp", { email, code: String(code ?? "").trim() });
+        // success re-renders via myDesk
+      } catch {
+        setError("That code didn't match (or expired). Request a fresh one.");
+      } finally {
+        setBusy(false);
+      }
+    };
+    return (
+      <>
+        <h2 id="dialog-title">Your desk.<br />One sign-in away.</h2>
+        {step === "email" ? (
+          <form onSubmit={sendCode}>
+            <p>Enter your email and we'll send an 8-digit sign-in code. No passwords.</p>
+            <div className="search-row" style={{ marginTop: 14 }}>
+              <div className="search-box">
+                <label htmlFor="desk-email" className="sr-only">Email address</label>
+                <input id="desk-email" name="email" type="email" required placeholder="you@example.com" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+              </div>
+            </div>
+            <div className="dialog-actions">
+              <button className="button button--orange" type="submit" disabled={busy}>
+                {busy ? "Sending…" : "Email me a code"} <Arrow />
+              </button>
+            </div>
+            {error && <p className="dialog-muted" role="alert">{error}</p>}
+        <p className="dialog-muted">Sign-in codes are delivered by email; your address is used for sign-in and recall alerts, nothing else.</p>
+          </form>
+        ) : (
+          <form onSubmit={verifyCode}>
+            <p>We sent an 8-digit code to <strong>{email}</strong>. Enter it below.</p>
+            <div className="search-row" style={{ marginTop: 14 }}>
+              <div className="search-box">
+                <label htmlFor="desk-code" className="sr-only">Sign-in code</label>
+                <input id="desk-code" name="code" inputMode="numeric" pattern="[0-9]*" required placeholder="12345678" autoComplete="one-time-code" />
+              </div>
+            </div>
+            <div className="dialog-actions">
+              <button className="button button--orange" type="submit" disabled={busy}>
+                {busy ? "Checking…" : "Sign in"} <Arrow />
+              </button>
+              <button className="button button--outline" type="button" onClick={() => { setStep("email"); setError(""); }}>
+                Different email
+              </button>
+            </div>
+            {error && <p className="dialog-muted" role="alert">{error}</p>}
+          </form>
+        )}
+      </>
+    );
+  }
+
+  // Signed in: the real desk.
+  return (
+    <>
+      <h2 id="dialog-title">One place.<br />One less thing.</h2>
+      <p>Signed in as <strong>{desk.email ?? "your account"}</strong>.</p>
+      <div className="detail-block">
+        <span className="detail-label">Your receipt forwarding address</span>
+        {desk.ingestAddress ? (
+          <p><strong>{desk.ingestAddress}</strong><br />Forward retailer receipts here — they become the items on your desk.</p>
+        ) : (
+          <p>
+            <strong>Reserved for you (tag: {desk.userTag ?? "…"})</strong> — the
+            receipts inbox is activating; your personal forwarding address
+            appears here the moment it's live.
+          </p>
+        )}
+      </div>
+      <div className="detail-block">
+        <span className="detail-label">Watched items</span>
+        <p>{desk.itemsCount === 0 ? "None yet — receipt ingestion opens next." : `${desk.itemsCount} items watched`}</p>
+      </div>
+      <div className="dialog-actions">
+        <button className="button button--orange" onClick={onSampleClaim}>See a sample claim <Arrow /></button>
+        <button className="button button--outline" onClick={() => void signOut()}>Sign out</button>
+      </div>
+      <p className="dialog-muted">Recall matching against your items goes live this build cycle — you'll get an email the day something you own is recalled.</p>
+    </>
+  );
+}
 
 type Screen =
   | { kind: "welcome" } | { kind: "desk" } | { kind: "claim" } | { kind: "approve" }
@@ -231,7 +352,7 @@ export default function App() {
     screen?.kind === "recall"
       ? `Official ${SOURCE_LABEL[screen.recall.source]} ${noticeKind(screen.recall)} · ${fmtDate(screen.recall.publishedAt)}${screen.recall.status === "closed" ? " · CLOSED" : screen.recall.status === "expanded" ? " · EXPANDED" : ""}`
       : screen?.kind === "welcome" ? "The personal desk · Preview"
-      : screen?.kind === "desk" ? "My desk · Sample preview"
+      : screen?.kind === "desk" ? "My desk"
       : screen?.kind === "claim" ? "Your approval comes first · Sample preview"
       : screen?.kind === "approve" ? "Sample workflow"
       : screen?.kind === "about" ? "About Recall Desk"
@@ -259,31 +380,7 @@ export default function App() {
       </>
     );
   } else if (screen?.kind === "desk") {
-    dialogBody = (
-      <>
-        <h2 id="dialog-title">One place.<br />One less thing.</h2>
-        <p>This sample desk shows how a receipt becomes a recall alert, ready for you to review.</p>
-        {sample && (
-          <div className="dialog-product">
-            {sample.imageUrl && <img src={sample.imageUrl} alt={sample.imageCaption ?? "Recalled product"} />}
-            <div>
-              <span className="preview-label">SAMPLE MATCH · REAL RECALL</span>
-              <h3>{sample.title}</h3>
-              <p className="product-hazard">Recall matched · Review needed</p>
-            </div>
-          </div>
-        )}
-        <ul className="sample-timeline">
-          <li><span>✓</span><div><strong>Receipt added</strong><small>Purchase details available for review</small></div></li>
-          <li><span>✓</span><div><strong>Recall found</strong><small>{sample ? `${SOURCE_LABEL[sample.source]} notice · ${fmtDate(sample.publishedAt)}` : "Official notice"}</small></div></li>
-          <li><span>3</span><div><strong>Claim prepared</strong><small>Waiting for your review</small></div></li>
-        </ul>
-        <div className="dialog-actions">
-          <button className="button button--orange" onClick={open("claim")}>Review sample claim <Arrow /></button>
-        </div>
-        <p className="dialog-muted">Sample walkthrough over a real recall. Account sign-in and receipt monitoring are in development.</p>
-      </>
-    );
+    dialogBody = <DeskScreen onSampleClaim={open("claim")} />;
   } else if (screen?.kind === "claim") {
     const remedyWord = sample?.remedyOptions[0]?.toLowerCase() ?? "remedy";
     dialogBody = (

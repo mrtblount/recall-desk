@@ -13,6 +13,11 @@ const app = defineApp({
   env: {
     FIRECRAWL_API_KEY: v.string(),
     FIRECRAWL_WEBHOOK_SECRET: v.optional(v.string()),
+    // AgentMail (set during the M6 key smoke test; optional until then)
+    AGENTMAIL_API_KEY: v.optional(v.string()),
+    AGENTMAIL_WEBHOOK_SECRET: v.optional(v.string()),
+    AGENTMAIL_OTP_INBOX_ID: v.optional(v.string()),
+    AGENTMAIL_RECEIPTS_ADDRESS: v.optional(v.string()),
   },
 });
 
