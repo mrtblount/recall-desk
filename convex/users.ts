@@ -34,12 +34,16 @@ export const myDesk = query({
       .query("items")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .take(101);
+    const matches = await ctx.db
+      .query("matches")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .take(101);
     return {
       email: user.email ?? null,
       userTag: user.userTag ?? null,
       ingestAddress,
       itemsCount: items.length,
-      matchesCount: 0, // matches land in M7
+      matchesCount: matches.filter((m) => m.state !== "dismissed").length,
     };
   },
 });

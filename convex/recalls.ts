@@ -6,7 +6,7 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { crawlPool } from "./pools";
+import { crawlPool, llmPool } from "./pools";
 import schema, { recallDoc, vRecallStatus, vSource } from "./schema";
 
 /** What a crawl produces: everything except the server-stamped fields. */
@@ -71,6 +71,12 @@ export const upsertBatchFromCrawl = internalMutation({
     let detailScrapesEnqueued = 0;
     const maxDetailScrapes = args.maxDetailScrapes ?? 0;
     const now = Date.now();
+    let matchSweeps = 0;
+    const enqueueMatchSweep = async (recallId: Id<"recalls">, status: string) => {
+      if (status === "closed" || matchSweeps >= 25) return;
+      await llmPool.enqueueAction(ctx, internal.match.recallChanged, { recallId });
+      matchSweeps++;
+    };
     const enqueueScrape = async (recallId: Id<"recalls">) => {
       if (detailScrapesEnqueued >= maxDetailScrapes) return;
       await crawlPool.enqueueAction(
@@ -100,6 +106,7 @@ export const upsertBatchFromCrawl = internalMutation({
         // Detail scrapes are CPSC-specific (their notices carry the
         // manufacturer remedy links; FDA rows have no per-record URL).
         if (doc.source === "cpsc") await enqueueScrape(id);
+        await enqueueMatchSweep(id, statusOverride ?? "active");
         inserted++;
       } else if (existing.contentHash === doc.contentHash) {
         if (now - existing.lastSeenAt > LAST_SEEN_REFRESH_MS) {
@@ -150,6 +157,7 @@ export const upsertBatchFromCrawl = internalMutation({
         });
         changedIds.push(existing._id);
         if (doc.source === "cpsc") await enqueueScrape(existing._id);
+        await enqueueMatchSweep(existing._id, nextStatus);
         updated++;
       }
     }

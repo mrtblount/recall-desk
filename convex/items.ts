@@ -1,7 +1,9 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { stripControl } from "./emailParse";
+import { llmPool } from "./pools";
 import schema from "./schema";
 
 const emptyToUndef = (s: unknown): string | undefined => {
@@ -64,6 +66,10 @@ export const createFromExtraction = internalMutation({
           status: "active",
         }),
       );
+    }
+    // Matcher trigger — transactional with the item inserts.
+    for (const itemId of ids) {
+      await llmPool.enqueueAction(ctx, internal.match.adjudicateItem, { itemId });
     }
     await ctx.db.patch("emailsProcessed", ledger._id, {
       itemIdsCreated: ids,

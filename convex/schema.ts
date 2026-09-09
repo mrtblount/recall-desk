@@ -139,6 +139,28 @@ export default defineSchema({
     status: v.union(v.literal("active"), v.literal("dismissed")),
   }).index("by_userId", ["userId"]),
 
+  /** A confirmed item-recall match. One row per (itemId, recallId). */
+  matches: defineTable({
+    userId: v.id("users"),
+    itemId: v.id("items"),
+    recallId: v.id("recalls"),
+    matchScore: v.number(), // adjudicator confidence 0-1
+    prefilterScore: v.number(), // token/UPC score that made it a candidate
+    matchRationale: v.string(),
+    state: v.union(
+      v.literal("new"),
+      v.literal("notified"),
+      v.literal("claim_ready"),
+      v.literal("claim_sent"),
+      v.literal("acknowledged"),
+      v.literal("resolved"),
+      v.literal("dismissed"),
+    ),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_itemId_and_recallId", ["itemId", "recallId"])
+    .index("by_recallId", ["recallId"]),
+
   /** Idempotency ledger for inbound mail — one row per message_id, written
    * transactionally with any follow-up enqueue. Raw bodies live in the
    * AgentMail component's inboundMessages table. */

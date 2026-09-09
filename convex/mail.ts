@@ -73,6 +73,29 @@ export const provisionSharedInbox = internalAction({
   },
 });
 
+/** Allowlist-guarded send. EVERY outbound path goes through here. */
+export async function sendGuarded(args: {
+  inboxId: string;
+  to: string;
+  subject: string;
+  text: string;
+}): Promise<{ messageId: string; threadId: string }> {
+  assertAllowedRecipient(args.to);
+  const res = await fetch(
+    `${API_BASE}/inboxes/${encodeURIComponent(args.inboxId)}/messages/send`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ to: [args.to], subject: args.subject, text: args.text }),
+    },
+  );
+  if (!res.ok) {
+    throw new Error(`AgentMail send failed (${res.status}): ${await res.text()}`);
+  }
+  const json = (await res.json()) as { message_id: string; thread_id: string };
+  return { messageId: json.message_id, threadId: json.thread_id };
+}
+
 /** Allowlist-guarded test send (smoke tests only). */
 export const sendTest = internalAction({
   args: {
@@ -82,22 +105,7 @@ export const sendTest = internalAction({
     text: v.string(),
   },
   returns: v.object({ messageId: v.string(), threadId: v.string() }),
-  handler: async (_ctx, args) => {
-    assertAllowedRecipient(args.to);
-    const res = await fetch(
-      `${API_BASE}/inboxes/${encodeURIComponent(args.inboxId)}/messages/send`,
-      {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ to: [args.to], subject: args.subject, text: args.text }),
-      },
-    );
-    if (!res.ok) {
-      throw new Error(`AgentMail send failed (${res.status}): ${await res.text()}`);
-    }
-    const json = (await res.json()) as { message_id: string; thread_id: string };
-    return { messageId: json.message_id, threadId: json.thread_id };
-  },
+  handler: async (_ctx, args) => await sendGuarded(args),
 });
 
 /** Peek at recent inbox messages (metadata only) for smoke verification. */

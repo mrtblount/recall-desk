@@ -88,6 +88,8 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
   const desk = useQuery(api.users.myDesk);
   const items = useQuery(api.items.myItems, desk ? {} : "skip");
   const dismissItem = useMutation(api.items.dismissItem);
+  const matches = useQuery(api.match.myMatches, desk ? {} : "skip");
+  const dismissMatch = useMutation(api.match.dismissMatch);
   const [step, setStep] = useState<"email" | "code">("email");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
@@ -214,6 +216,51 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
           </p>
         )}
       </div>
+      {matches !== undefined && matches.length > 0 && (
+        <div className="detail-block">
+          <span className="detail-label" style={{ color: "var(--orange)" }}>
+            ⚠ Recall matches · {matches.length}
+          </span>
+          <ul className="sample-timeline">
+            {matches.map(({ match, item, recall }) => (
+              <li key={match._id}>
+                <span aria-hidden="true" style={{ color: "var(--orange)" }}>!</span>
+                <div>
+                  <strong>{item?.product ?? "(item removed)"}</strong>
+                  <small>
+                    {recall?.title ?? "(recall unavailable)"}
+                    <br />
+                    {match.matchRationale}
+                    {" · "}
+                    {recall && (
+                      <a href={recall.url} target="_blank" rel="noopener noreferrer">
+                        official notice ↗
+                      </a>
+                    )}
+                    {recall?.remedyUrl && (
+                      <>
+                        {" · "}
+                        <a href={recall.remedyUrl} target="_blank" rel="noopener noreferrer">
+                          start the remedy ↗
+                        </a>
+                      </>
+                    )}
+                    {match.state === "notified" ? " · alerted by email" : ""}
+                  </small>
+                </div>
+                <button
+                  className="clear-search"
+                  aria-label="Dismiss this match"
+                  title="Dismiss"
+                  onClick={() => void dismissMatch({ matchId: match._id })}
+                >
+                  <svg className="icon" aria-hidden="true"><use href="#i-close" /></svg>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="detail-block">
         <span className="detail-label">Watched items{desk.itemsCount > 100 ? " · 100+" : desk.itemsCount > 0 ? ` · ${desk.itemsCount}` : ""}</span>
         {items === undefined || items.length === 0 ? (
@@ -259,7 +306,7 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
         <button className="button button--orange" onClick={onSampleClaim}>See a sample claim <Arrow /></button>
         <button className="button button--outline" onClick={() => { setStep("email"); setError(""); setNotice(""); void signOut(); }}>Sign out</button>
       </div>
-      <p className="dialog-muted">Recall matching is in development — when it launches, you'll be emailed if something you own is recalled.</p>
+      <p className="dialog-muted">Your items are matched against every new recall automatically — you'll be emailed the day something you own is recalled.</p>
     </>
   );
 }
