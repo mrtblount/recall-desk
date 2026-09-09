@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useAuthActions } from "@convex-dev/auth/react";
-import { usePaginatedQuery, useQuery } from "convex/react";
+import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { api } from "../convex/_generated/api";
 import type { Doc } from "../convex/_generated/dataModel";
 import heroCollage from "./assets/hero-collage.webp";
@@ -87,6 +87,7 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
   const { signIn, signOut } = useAuthActions();
   const desk = useQuery(api.users.myDesk);
   const items = useQuery(api.items.myItems, desk ? {} : "skip");
+  const dismissItem = useMutation(api.items.dismissItem);
   const [step, setStep] = useState<"email" | "code">("email");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
@@ -214,29 +215,44 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
         )}
       </div>
       <div className="detail-block">
-        <span className="detail-label">Watched items{desk.itemsCount > 0 ? ` · ${desk.itemsCount}` : ""}</span>
+        <span className="detail-label">Watched items{desk.itemsCount > 100 ? " · 100+" : desk.itemsCount > 0 ? ` · ${desk.itemsCount}` : ""}</span>
         {items === undefined || items.length === 0 ? (
           <p>
             None yet — forward a retailer receipt to your address above and
             the items appear here within a minute.
           </p>
         ) : (
-          <ul className="sample-timeline">
-            {items.slice(0, 12).map((item) => (
-              <li key={item._id}>
-                <span aria-hidden="true">▤</span>
-                <div>
-                  <strong>{item.product}</strong>
-                  <small>
-                    {[item.brand, item.retailer, item.purchaseDate]
-                      .filter(Boolean)
-                      .join(" · ") || "details pending"}
-                    {item.confidence < 0.6 ? " · low confidence" : ""}
-                  </small>
-                </div>
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul className="sample-timeline">
+              {items.slice(0, 12).map((item) => (
+                <li key={item._id}>
+                  <span aria-hidden="true">▤</span>
+                  <div>
+                    <strong>{item.product}</strong>
+                    <small>
+                      {[item.brand, item.retailer, item.purchaseDate]
+                        .filter(Boolean)
+                        .join(" · ") || "no further details in the receipt"}
+                      {item.confidence < 0.8
+                        ? ` · extraction confidence ${Math.round(item.confidence * 100)}%`
+                        : ""}
+                    </small>
+                  </div>
+                  <button
+                    className="clear-search"
+                    aria-label={`Stop watching ${item.product}`}
+                    title="Stop watching"
+                    onClick={() => void dismissItem({ itemId: item._id })}
+                  >
+                    <svg className="icon" aria-hidden="true"><use href="#i-close" /></svg>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {items.length > 12 && (
+              <p className="dialog-muted">+{items.length - 12} more items on your desk.</p>
+            )}
+          </>
         )}
       </div>
       <div className="dialog-actions">

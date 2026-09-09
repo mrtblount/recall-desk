@@ -144,6 +144,7 @@ export default defineSchema({
    * AgentMail component's inboundMessages table. */
   emailsProcessed: defineTable({
     messageId: v.string(),
+    inboxId: v.optional(v.string()),
     threadId: v.optional(v.string()),
     userId: v.optional(v.id("users")),
     fromAddress: v.optional(v.string()),
@@ -156,7 +157,9 @@ export default defineSchema({
     ),
     itemIdsCreated: v.array(v.id("items")),
     error: v.optional(v.string()),
-  }).index("by_messageId", ["messageId"]),
+  })
+    .index("by_messageId", ["messageId"])
+    .index("by_userId", ["userId"]),
 
   /** Budget guard singleton (hard constraint #7): daily + total LLM spend.
    * Updated in the same mutation as every llmUsage insert. */

@@ -8,4 +8,13 @@ const crons = cronJobs();
 // interval() also fires once at deploy, which doubles as a smoke test.
 crons.interval("crawl recall feeds", { hours: 2 }, internal.crawl.feeds.runDueFeeds, {});
 
+// Budget-halted receipt extractions recover after the daily reset instead of
+// silently vanishing (review finding). Terminal errors are excluded.
+crons.interval(
+  "retry stalled extractions",
+  { hours: 6 },
+  internal.email.retryStalledExtractions,
+  {},
+);
+
 export default crons;

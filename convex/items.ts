@@ -1,10 +1,11 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
-import { internalMutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { stripControl } from "./emailParse";
 import schema from "./schema";
 
 const emptyToUndef = (s: unknown): string | undefined => {
-  const t = typeof s === "string" ? s.trim() : "";
+  const t = typeof s === "string" ? stripControl(s).trim() : "";
   return t === "" ? undefined : t;
 };
 
@@ -64,9 +65,21 @@ export const createFromExtraction = internalMutation({
         }),
       );
     }
-    await ctx.db.patch("emailsProcessed", ledger._id, { itemIdsCreated: ids });
+    await ctx.db.patch("emailsProcessed", ledger._id, {
+      itemIdsCreated: ids,
+      error:
+        rawItems.length >= 30 && Array.isArray(e.items) && e.items.length > 30
+          ? `receipt listed ${e.items.length} items; first 30 kept`
+          : undefined,
+    });
     const stats = await ctx.db.query("publicStats").unique();
-    if (stats !== null) {
+    if (stats === null) {
+      await ctx.db.insert("publicStats", {
+        recallsTracked: 0,
+        itemsMonitored: ids.length,
+        matchesFound: 0,
+      });
+    } else {
       await ctx.db.patch("publicStats", stats._id, {
         itemsMonitored: stats.itemsMonitored + ids.length,
       });
@@ -75,17 +88,35 @@ export const createFromExtraction = internalMutation({
   },
 });
 
-/** The signed-in user's watched items, newest first. */
+/** The signed-in user's ACTIVE watched items, newest first. */
 export const myItems = query({
   args: {},
   returns: v.array(schema.doc("items")),
   handler: async (ctx) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) return [];
-    return await ctx.db
+    const rows = await ctx.db
       .query("items")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .order("desc")
       .take(100);
+    return rows.filter((r) => r.status === "active");
+  },
+});
+
+/** Remove an item from the watch list. Ownership derived server-side —
+ * never from an argument (authz guideline). */
+export const dismissItem = mutation({
+  args: { itemId: v.id("items") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("not signed in");
+    const item = await ctx.db.get("items", args.itemId);
+    if (item === null || item.userId !== userId) {
+      throw new Error("item not found");
+    }
+    await ctx.db.patch("items", args.itemId, { status: "dismissed" });
+    return null;
   },
 });
