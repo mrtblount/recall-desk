@@ -218,7 +218,7 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
       </div>
       {matches !== undefined && matches.length > 0 && (
         <div className="detail-block">
-          <span className="detail-label" style={{ color: "var(--orange)" }}>
+          <span className="detail-label" style={{ color: "var(--orange)" }} aria-live="polite">
             ⚠ Recall matches · {matches.length}
           </span>
           <ul className="sample-timeline">
@@ -229,18 +229,22 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
                   <strong>{item?.product ?? "(item removed)"}</strong>
                   <small>
                     {recall?.title ?? "(recall unavailable)"}
+                    {recall?.status === "closed" ? " · recall now closed" : ""}
                     <br />
-                    {match.matchRationale}
+                    {match.prefilterReasons && match.prefilterReasons.length > 0 && (
+                      <>Why: {match.prefilterReasons.join("; ")}<br /></>
+                    )}
+                    AI assessment ({Math.round(match.matchScore * 100)}%): {match.matchRationale}
                     {" · "}
                     {recall && (
                       <a href={recall.url} target="_blank" rel="noopener noreferrer">
                         official notice ↗
                       </a>
                     )}
-                    {recall?.remedyUrl && (
+                    {recall?.remedyUrl && recall.status !== "closed" && (
                       <>
                         {" · "}
-                        <a href={recall.remedyUrl} target="_blank" rel="noopener noreferrer">
+                        <a href={recall.remedyUrl} target="_blank" rel="noopener noreferrer" title="Extracted automatically from the official notice">
                           start the remedy ↗
                         </a>
                       </>
@@ -250,7 +254,7 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
                 </div>
                 <button
                   className="clear-search"
-                  aria-label="Dismiss this match"
+                  aria-label={`Dismiss match for ${item?.product ?? "this item"}`}
                   title="Dismiss"
                   onClick={() => void dismissMatch({ matchId: match._id })}
                 >

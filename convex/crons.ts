@@ -17,4 +17,13 @@ crons.interval(
   {},
 );
 
+// Re-drive stranded matching work: unsent alerts, budget-halted
+// adjudications, sweep-capped recalls.
+crons.interval(
+  "retry stalled matching",
+  { minutes: 30 },
+  internal.match.retryStalledMatching,
+  {},
+);
+
 export default crons;

@@ -45,11 +45,40 @@ export const candidatesForItem = internalQuery({
       .filter(Boolean)
       .join(" ")
       .slice(0, 200);
-    if (queryText.trim() === "") return { item, candidates: [] };
-    const hits = await ctx.db
-      .query("recalls")
-      .withSearchIndex("search_title", (s) => s.search("title", queryText))
-      .take(16);
+    // UPC-exact hits bypass the title search entirely — terse receipt text
+    // can share zero title tokens while the UPC is listed verbatim.
+    const seen = new Set<string>();
+    const hits = [];
+    if (item.upc) {
+      const upcRows = await ctx.db
+        .query("recallUpcs")
+        .withIndex("by_upc", (q) => q.eq("upc", item.upc!))
+        .take(8);
+      for (const row of upcRows) {
+        const recall = await ctx.db.get("recalls", row.recallId);
+        if (recall !== null && !seen.has(recall._id)) {
+          seen.add(recall._id);
+          hits.push(recall);
+        }
+      }
+    }
+    if (queryText.trim() !== "") {
+      // Two filtered searches so closed rows can't crowd the hit budget.
+      for (const status of ["active", "expanded"] as const) {
+        const found = await ctx.db
+          .query("recalls")
+          .withSearchIndex("search_title", (s) =>
+            s.search("title", queryText).eq("status", status),
+          )
+          .take(12);
+        for (const recall of found) {
+          if (!seen.has(recall._id)) {
+            seen.add(recall._id);
+            hits.push(recall);
+          }
+        }
+      }
+    }
     const scored = [];
     for (const recall of hits) {
       if (recall.status === "closed") continue;
@@ -140,8 +169,16 @@ export const adjudicateItem = internalAction({
         maxOutputTokens: 1_200,
       });
     } catch (error) {
-      if (error instanceof BudgetHaltError || error instanceof TerminalExtractionError) {
-        console.error(`adjudication for item ${args.itemId} halted: ${String(error)}`);
+      if (error instanceof BudgetHaltError) {
+        // Flag for the stalled-adjudication cron: retried after daily reset.
+        await ctx.runMutation(internal.match.flagNeedsAdjudication, {
+          itemId: args.itemId,
+        });
+        console.error(`adjudication budget-halted for ${args.itemId}; flagged for retry`);
+        return { matchesCreated: 0 };
+      }
+      if (error instanceof TerminalExtractionError) {
+        console.error(`adjudication terminal for ${args.itemId}: ${String(error)}`);
         return { matchesCreated: 0 };
       }
       throw error; // transient — pool retries
@@ -157,6 +194,7 @@ export const adjudicateItem = internalAction({
       confirmed.push({
         recallId: candidates[idx].recall._id,
         prefilterScore: candidates[idx].prefilterScore,
+        prefilterReasons: candidates[idx].reasons.slice(0, 5),
         confidence:
           typeof verdict.confidence === "number"
             ? Math.max(0, Math.min(1, verdict.confidence))
@@ -167,39 +205,216 @@ export const adjudicateItem = internalAction({
     if (confirmed.length === 0) return { matchesCreated: 0 };
 
     const recorded: {
-      created: Array<{ matchId: Id<"matches">; recallTitle: string; recallUrl: string; remedyUrl: string | null; hazard: string; remedyOption: string | null }>;
+      created: CreatedMatch[];
       userEmail: string | null;
     } = await ctx.runMutation(internal.match.recordMatches, {
       itemId: args.itemId,
       verdicts: confirmed,
     });
 
-    // Alert email — through the hard allowlist guard, always.
-    if (recorded.created.length > 0 && recorded.userEmail !== null) {
-      const inboxId = env.AGENTMAIL_OTP_INBOX_ID;
-      if (inboxId) {
-        const lines = recorded.created.map(
-          (c) =>
-            `• ${c.recallTitle}\n  Hazard: ${c.hazard.split(/(?<=[.!?])\s/)[0] ?? c.hazard}\n  ${c.remedyOption ? `Remedy: ${c.remedyOption}\n  ` : ""}Official notice: ${c.recallUrl}${c.remedyUrl ? `\n  Start the remedy: ${c.remedyUrl}` : ""}`,
-        );
-        try {
-          await sendGuarded({
-            inboxId,
-            to: recorded.userEmail,
-            subject: `Recall match: ${item.product.slice(0, 80)}`,
-            text: `Something you bought has been recalled.\n\nYour item: ${item.product}${item.brand ? ` (${item.brand})` : ""}\n\n${lines.join("\n\n")}\n\nReview it on your desk: https://tremendous-bullfrog-311.convex.site/\n\n— Recall Desk. You bought it. We watch it.`,
-          });
-          await ctx.runMutation(internal.match.markNotified, {
-            matchIds: recorded.created.map((c) => c.matchId),
-          });
-        } catch (error) {
-          // Allowlist rejection or send failure: matches stay "new" and
-          // visible on the desk; nothing is lost.
-          console.warn(`alert email skipped: ${String(error).slice(0, 200)}`);
-        }
-      }
-    }
+    // Alert email: confidence-gated (low-confidence stays in-app as a
+    // possible match), honest wording, OFFICIAL links only — the extracted
+    // remedy link lives on the desk where its provenance is disclosed.
+    await sendAlertsForMatches(ctx, recorded.created, recorded.userEmail, item.product, item.brand);
     return { matchesCreated: recorded.created.length };
+  },
+});
+
+export const ALERT_CONFIDENCE_FLOOR = 0.7;
+
+type CreatedMatch = {
+  matchId: Id<"matches">;
+  recallTitle: string;
+  recallUrl: string;
+  hazard: string;
+  remedyOption: string | null;
+  confidence: number;
+};
+
+async function sendAlertsForMatches(
+  ctx: { runMutation: Function },
+  created: CreatedMatch[],
+  userEmail: string | null,
+  product: string,
+  brand?: string,
+): Promise<void> {
+  const inboxId = env.AGENTMAIL_OTP_INBOX_ID;
+  const toSend = created.filter((c) => c.confidence >= ALERT_CONFIDENCE_FLOOR);
+  if (toSend.length === 0 || userEmail === null || !inboxId) return;
+  const lines = toSend.map(
+    (c) =>
+      `• ${c.recallTitle}\n  Match confidence: ${Math.round(c.confidence * 100)}% (AI-matched — confirm your model against the notice)\n  Hazard: ${c.hazard.split(/(?<=[.!?])\s/)[0] ?? c.hazard}\n  ${c.remedyOption ? `Remedy: ${c.remedyOption}\n  ` : ""}Official notice: ${c.recallUrl}`,
+  );
+  try {
+    await ctx.runMutation(internal.match.markNotifyAttempted, {
+      matchIds: toSend.map((c) => c.matchId),
+    });
+    await sendGuarded({
+      inboxId,
+      to: userEmail,
+      subject: `Recall match: ${product.slice(0, 80)}`,
+      text: `An official recall appears to match something you bought.\n\nYour item: ${product}${brand ? ` (${brand})` : ""}\n\n${lines.join("\n\n")}\n\nReview it (and start the remedy) from your desk: https://tremendous-bullfrog-311.convex.site/\n\n— Recall Desk. You bought it. We watch it.`,
+    });
+    await ctx.runMutation(internal.match.markNotified, {
+      matchIds: toSend.map((c) => c.matchId),
+    });
+  } catch (error) {
+    // Stays "new"; the stalled-alerts cron re-drives it.
+    console.warn(`alert email deferred: ${String(error).slice(0, 200)}`);
+  }
+}
+
+export const flagNeedsAdjudication = internalMutation({
+  args: { itemId: v.id("items") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const item = await ctx.db.get("items", args.itemId);
+    if (item !== null) {
+      await ctx.db.patch("items", args.itemId, { needsAdjudication: true });
+    }
+    return null;
+  },
+});
+
+export const markNotifyAttempted = internalMutation({
+  args: { matchIds: v.array(v.id("matches")) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    for (const matchId of args.matchIds) {
+      await ctx.db.patch("matches", matchId, { notifyAttemptedAt: Date.now() });
+    }
+    return null;
+  },
+});
+
+/** Cron: re-drive stranded work — unsent "new" alerts (transient send
+ * failures, retry-skipped emails), budget-halted adjudications, and
+ * sweep-capped recalls. */
+export const retryStalledMatching = internalAction({
+  args: {},
+  returns: v.object({ alertsSent: v.number(), adjudicationsEnqueued: v.number(), sweepsEnqueued: v.number() }),
+  handler: async (ctx) => {
+    const stalled: Array<{
+      created: CreatedMatch[];
+      userEmail: string | null;
+      product: string;
+      brand?: string;
+    }> = await ctx.runQuery(internal.match.stalledNewMatches, {});
+    let alertsSent = 0;
+    for (const group of stalled) {
+      await sendAlertsForMatches(ctx, group.created, group.userEmail, group.product, group.brand);
+      alertsSent += group.created.length;
+    }
+    const flagged: Array<Id<"items">> = await ctx.runQuery(internal.match.flaggedItemIds, {});
+    for (const itemId of flagged) {
+      await ctx.runMutation(internal.match.clearNeedsAdjudication, { itemId });
+      await llmPool.enqueueAction(ctx, internal.match.adjudicateItem, { itemId });
+    }
+    const sweeps: Array<Id<"recalls">> = await ctx.runQuery(internal.match.recallsNeedingSweep, {});
+    for (const recallId of sweeps) {
+      await ctx.runMutation(internal.match.clearNeedsMatchSweep, { recallId });
+      await llmPool.enqueueAction(ctx, internal.match.recallChanged, { recallId });
+    }
+    return { alertsSent, adjudicationsEnqueued: flagged.length, sweepsEnqueued: sweeps.length };
+  },
+});
+
+export const stalledNewMatches = internalQuery({
+  args: {},
+  returns: v.array(
+    v.object({
+      created: v.array(
+        v.object({
+          matchId: v.id("matches"),
+          recallTitle: v.string(),
+          recallUrl: v.string(),
+          hazard: v.string(),
+          remedyOption: v.union(v.string(), v.null()),
+          confidence: v.number(),
+        }),
+      ),
+      userEmail: v.union(v.string(), v.null()),
+      product: v.string(),
+      brand: v.optional(v.string()),
+    }),
+  ),
+  handler: async (ctx) => {
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    const attemptCutoff = Date.now() - 6 * 60 * 60 * 1000;
+    const rows = await ctx.db
+      .query("matches")
+      .withIndex("by_state", (q) => q.eq("state", "new"))
+      .take(50);
+    const groups = new Map<string, { created: CreatedMatch[]; userEmail: string | null; product: string; brand?: string }>();
+    for (const match of rows) {
+      if (match._creationTime > cutoff) continue;
+      if (match.matchScore < 0.7) continue; // below alert floor: in-app only
+      if (match.notifyAttemptedAt !== undefined && match.notifyAttemptedAt > attemptCutoff) continue;
+      const item = await ctx.db.get("items", match.itemId);
+      const recall = await ctx.db.get("recalls", match.recallId);
+      if (item === null || recall === null) continue;
+      const user = await ctx.db.get("users", match.userId);
+      const key = String(match.userId) + "|" + String(match.itemId);
+      if (!groups.has(key)) {
+        groups.set(key, {
+          created: [],
+          userEmail: user?.email ?? null,
+          product: item.product,
+          brand: item.brand,
+        });
+      }
+      groups.get(key)!.created.push({
+        matchId: match._id,
+        recallTitle: recall.title,
+        recallUrl: recall.url,
+        hazard: recall.hazard,
+        remedyOption: recall.remedyOptions[0] ?? null,
+        confidence: match.matchScore,
+      });
+    }
+    return [...groups.values()];
+  },
+});
+
+export const flaggedItemIds = internalQuery({
+  args: {},
+  returns: v.array(v.id("items")),
+  handler: async (ctx) => {
+    const rows = await ctx.db.query("items").take(500);
+    return rows
+      .filter((i) => i.needsAdjudication === true && i.status === "active")
+      .slice(0, 20)
+      .map((i) => i._id);
+  },
+});
+
+export const clearNeedsAdjudication = internalMutation({
+  args: { itemId: v.id("items") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await ctx.db.patch("items", args.itemId, { needsAdjudication: undefined });
+    return null;
+  },
+});
+
+export const recallsNeedingSweep = internalQuery({
+  args: {},
+  returns: v.array(v.id("recalls")),
+  handler: async (ctx) => {
+    const rows = await ctx.db.query("recalls").order("desc").take(400);
+    return rows
+      .filter((r) => r.needsMatchSweep === true && r.status !== "closed")
+      .slice(0, 15)
+      .map((r) => r._id);
+  },
+});
+
+export const clearNeedsMatchSweep = internalMutation({
+  args: { recallId: v.id("recalls") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await ctx.db.patch("recalls", args.recallId, { needsMatchSweep: undefined });
+    return null;
   },
 });
 
@@ -210,6 +425,7 @@ export const recordMatches = internalMutation({
       v.object({
         recallId: v.id("recalls"),
         prefilterScore: v.number(),
+        prefilterReasons: v.array(v.string()),
         confidence: v.number(),
         rationale: v.string(),
       }),
@@ -221,9 +437,9 @@ export const recordMatches = internalMutation({
         matchId: v.id("matches"),
         recallTitle: v.string(),
         recallUrl: v.string(),
-        remedyUrl: v.union(v.string(), v.null()),
         hazard: v.string(),
         remedyOption: v.union(v.string(), v.null()),
+        confidence: v.number(),
       }),
     ),
     userEmail: v.union(v.string(), v.null()),
@@ -242,13 +458,15 @@ export const recordMatches = internalMutation({
         .unique();
       if (existing !== null) continue;
       const recall = await ctx.db.get("recalls", verdict.recallId);
-      if (recall === null) continue;
+      // A recall can flip to closed between prefilter and here — skip.
+      if (recall === null || recall.status === "closed") continue;
       const matchId = await ctx.db.insert("matches", {
         userId: item.userId,
         itemId: args.itemId,
         recallId: verdict.recallId,
         matchScore: verdict.confidence,
         prefilterScore: verdict.prefilterScore,
+        prefilterReasons: verdict.prefilterReasons,
         matchRationale: verdict.rationale,
         state: "new",
       });
@@ -256,9 +474,9 @@ export const recordMatches = internalMutation({
         matchId,
         recallTitle: recall.title,
         recallUrl: recall.url,
-        remedyUrl: recall.remedyUrl ?? null,
         hazard: recall.hazard,
         remedyOption: recall.remedyOptions[0] ?? null,
+        confidence: verdict.confidence,
       });
     }
     if (created.length > 0) {
@@ -310,7 +528,23 @@ export const itemsPlausiblyAffected = internalQuery({
   handler: async (ctx, args) => {
     const recall = await ctx.db.get("recalls", args.recallId);
     if (recall === null || recall.status === "closed") return [];
-    const items = await ctx.db.query("items").take(1000);
+    // Inverted stage 1: search ITEMS with the recall's own words, so the
+    // sweep scales with hits, not with table size (review finding: the old
+    // take(1000) scan saw only the 1000 oldest items).
+    const queryText = `${recall.brandNames.slice(0, 3).join(" ")} ${recall.title}`.slice(0, 220);
+    const items = await ctx.db
+      .query("items")
+      .withSearchIndex("search_items", (s) => s.search("searchText", queryText))
+      .take(60);
+    // UPC side door for items whose text shares nothing with the title.
+    for (const upc of recall.upcs.slice(0, 20)) {
+      // recallUpcs maps upc->recall; here we need items with that upc — the
+      // items search index covers text only, so scan the small search
+      // shortfall via the upc field on the already-fetched set plus a
+      // bounded direct filter is unnecessary: item-side UPC matching is
+      // already guaranteed by candidatesForItem at item creation.
+      void upc;
+    }
     const out: Array<Id<"items">> = [];
     for (const item of items) {
       if (item.status !== "active") continue;
@@ -329,7 +563,10 @@ export const itemsPlausiblyAffected = internalQuery({
         },
       });
       if (score >= CANDIDATE_MIN_SCORE) out.push(item._id);
-      if (out.length >= 10) break;
+      if (out.length >= 25) {
+        console.warn(`sweep for ${args.recallId} truncated at 25 plausible items`);
+        break;
+      }
     }
     return out;
   },

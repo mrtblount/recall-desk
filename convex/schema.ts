@@ -40,6 +40,8 @@ export const recallDoc = v.object({
   unitsText: v.optional(v.string()),
   publishedAt: v.number(),
   lastSeenAt: v.number(),
+  /** Set when a match sweep was dropped by the per-run cap; drained by cron. */
+  needsMatchSweep: v.optional(v.boolean()),
   /** Set whenever a detail scrape reported (even a null remedyUrl), so the
    * backfill converges instead of re-scraping no-link pages forever. */
   detailScrapedAt: v.optional(v.number()),
@@ -137,7 +139,23 @@ export default defineSchema({
     quantity: v.optional(v.number()),
     confidence: v.number(),
     status: v.union(v.literal("active"), v.literal("dismissed")),
-  }).index("by_userId", ["userId"]),
+    /** product+brand+model, for the recall-side sweep's search index. */
+    searchText: v.optional(v.string()),
+    /** Set when adjudication was budget-halted; a cron retries and clears. */
+    needsAdjudication: v.optional(v.boolean()),
+  })
+    .index("by_userId", ["userId"])
+    .searchIndex("search_items", { searchField: "searchText" }),
+
+  /** UPC -> recall lookup so UPC-exact matches bypass the title search
+   * entirely (title tokens can miss; the UPC cannot). Maintained in the
+   * same mutation as every recalls write. */
+  recallUpcs: defineTable({
+    upc: v.string(),
+    recallId: v.id("recalls"),
+  })
+    .index("by_upc", ["upc"])
+    .index("by_recallId", ["recallId"]),
 
   /** A confirmed item-recall match. One row per (itemId, recallId). */
   matches: defineTable({
@@ -147,6 +165,10 @@ export default defineSchema({
     matchScore: v.number(), // adjudicator confidence 0-1
     prefilterScore: v.number(), // token/UPC score that made it a candidate
     matchRationale: v.string(),
+    /** Deterministic prefilter evidence (mechanically true of the docs). */
+    prefilterReasons: v.optional(v.array(v.string())),
+    /** Stamped before each alert attempt (bounded double-send window). */
+    notifyAttemptedAt: v.optional(v.number()),
     state: v.union(
       v.literal("new"),
       v.literal("notified"),
@@ -159,7 +181,8 @@ export default defineSchema({
   })
     .index("by_userId", ["userId"])
     .index("by_itemId_and_recallId", ["itemId", "recallId"])
-    .index("by_recallId", ["recallId"]),
+    .index("by_recallId", ["recallId"])
+    .index("by_state", ["state"]),
 
   /** Idempotency ledger for inbound mail — one row per message_id, written
    * transactionally with any follow-up enqueue. Raw bodies live in the

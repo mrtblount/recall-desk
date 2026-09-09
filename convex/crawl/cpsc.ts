@@ -166,6 +166,7 @@ export async function upsertInBatches(
   ctx: ActionCtx,
   docs: Array<CrawlDoc & { statusOverride?: "active" | "expanded" | "closed" }>,
   maxDetailScrapes = 0,
+  maxMatchSweeps = 0,
 ): Promise<{
   inserted: number;
   updated: number;
@@ -182,6 +183,7 @@ export async function upsertInBatches(
     const result = await ctx.runMutation(internal.recalls.upsertBatchFromCrawl, {
       docs: docs.slice(i, i + BATCH_SIZE),
       maxDetailScrapes: Math.max(0, maxDetailScrapes - detailScrapesEnqueued),
+      maxMatchSweeps,
     });
     inserted += result.inserted;
     updated += result.updated;

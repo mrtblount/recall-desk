@@ -50,13 +50,18 @@ export const createFromExtraction = internalMutation({
       const product = emptyToUndef(it.product);
       if (product === undefined) continue;
       const upcDigits = (emptyToUndef(it.upc) ?? "").replace(/\D/g, "");
+      const brandVal = emptyToUndef(it.brand)?.slice(0, 120);
+      const modelVal = emptyToUndef(it.model)?.slice(0, 120);
       ids.push(
         await ctx.db.insert("items", {
           userId: args.userId,
           sourceMessageId: args.messageId,
+          searchText: [product.slice(0, 300), brandVal, modelVal]
+            .filter(Boolean)
+            .join(" "),
           product: product.slice(0, 300),
-          brand: emptyToUndef(it.brand)?.slice(0, 120),
-          model: emptyToUndef(it.model)?.slice(0, 120),
+          brand: brandVal,
+          model: modelVal,
           upc: upcDigits.length >= 8 && upcDigits.length <= 14 ? upcDigits : undefined,
           category: emptyToUndef(it.category)?.slice(0, 60),
           purchaseDate: orderDate,
@@ -91,6 +96,24 @@ export const createFromExtraction = internalMutation({
       });
     }
     return { itemsCreated: ids.length };
+  },
+});
+
+/** One-off: stamp searchText on pre-existing items. */
+export const backfillSearchText = internalMutation({
+  args: {},
+  returns: v.object({ patched: v.number() }),
+  handler: async (ctx) => {
+    const rows = await ctx.db.query("items").take(500);
+    let patched = 0;
+    for (const item of rows) {
+      if (item.searchText !== undefined) continue;
+      await ctx.db.patch("items", item._id, {
+        searchText: [item.product, item.brand, item.model].filter(Boolean).join(" "),
+      });
+      patched++;
+    }
+    return { patched };
   },
 });
 

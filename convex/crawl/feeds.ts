@@ -242,7 +242,7 @@ export const runDueFeeds = internalAction({
           console.warn(`runDueFeeds: no handler for feed key ${feed.key}`);
           continue;
         }
-        const totals = await upsertInBatches(ctx, docs, MAX_DETAIL_SCRAPES_PER_RUN);
+        const totals = await upsertInBatches(ctx, docs, MAX_DETAIL_SCRAPES_PER_RUN, 50);
         await ctx.runMutation(internal.crawl.feeds.markFeedCrawled, {
           feedId: feed._id,
           crawledAt: now,

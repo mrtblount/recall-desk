@@ -55,6 +55,9 @@ export const upsertBatchFromCrawl = internalMutation({
     // write and the scrape enqueue atomic — an action dying between the two
     // could otherwise orphan changed rows from enrichment forever.
     maxDetailScrapes: v.optional(v.number()),
+    // Max recall->items match sweeps this batch; overflow rows are flagged
+    // needsMatchSweep and drained by cron instead of dropped.
+    maxMatchSweeps: v.optional(v.number()),
   },
   returns: v.object({
     inserted: v.number(),
@@ -72,10 +75,32 @@ export const upsertBatchFromCrawl = internalMutation({
     const maxDetailScrapes = args.maxDetailScrapes ?? 0;
     const now = Date.now();
     let matchSweeps = 0;
+    // Explicit opt-in like maxDetailScrapes: callers without a sweep budget
+    // (manual seeds, tests) enqueue nothing and flag nothing.
+    const maxMatchSweeps = args.maxMatchSweeps ?? 0;
     const enqueueMatchSweep = async (recallId: Id<"recalls">, status: string) => {
-      if (status === "closed" || matchSweeps >= 25) return;
+      if (status === "closed") return;
+      if (matchSweeps >= maxMatchSweeps) {
+        if (args.maxMatchSweeps !== undefined) {
+          await ctx.db.patch("recalls", recallId, { needsMatchSweep: true });
+        }
+        return;
+      }
       await llmPool.enqueueAction(ctx, internal.match.recallChanged, { recallId });
       matchSweeps++;
+    };
+    const syncUpcs = async (recallId: Id<"recalls">, prior: string[], next: string[]) => {
+      for (const row of await ctx.db
+        .query("recallUpcs")
+        .withIndex("by_recallId", (q) => q.eq("recallId", recallId))
+        .take(60)) {
+        if (!next.includes(row.upc)) await ctx.db.delete("recallUpcs", row._id);
+      }
+      for (const upc of next) {
+        if (!prior.includes(upc)) {
+          await ctx.db.insert("recallUpcs", { upc, recallId });
+        }
+      }
     };
     const enqueueScrape = async (recallId: Id<"recalls">) => {
       if (detailScrapesEnqueued >= maxDetailScrapes) return;
@@ -106,6 +131,7 @@ export const upsertBatchFromCrawl = internalMutation({
         // Detail scrapes are CPSC-specific (their notices carry the
         // manufacturer remedy links; FDA rows have no per-record URL).
         if (doc.source === "cpsc") await enqueueScrape(id);
+        if (doc.upcs.length > 0) await syncUpcs(id, [], doc.upcs);
         await enqueueMatchSweep(id, statusOverride ?? "active");
         inserted++;
       } else if (existing.contentHash === doc.contentHash) {
@@ -157,6 +183,7 @@ export const upsertBatchFromCrawl = internalMutation({
         });
         changedIds.push(existing._id);
         if (doc.source === "cpsc") await enqueueScrape(existing._id);
+        await syncUpcs(existing._id, existing.upcs, doc.upcs);
         await enqueueMatchSweep(existing._id, nextStatus);
         updated++;
       }
@@ -200,6 +227,36 @@ export const enrichFromDetail = internalMutation({
       detailScrapedAt: Date.now(),
     });
     return null;
+  },
+});
+
+/** One-off: backfill recallUpcs for pre-existing rows, cursored on
+ * publishedAt to stay under transaction read limits. */
+export const backfillUpcsBatch = internalMutation({
+  args: { afterPublishedAt: v.number() },
+  returns: v.object({ nextCursor: v.union(v.number(), v.null()), upserted: v.number() }),
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("recalls")
+      .withIndex("by_publishedAt", (q) => q.gt("publishedAt", args.afterPublishedAt))
+      .take(250);
+    let upserted = 0;
+    for (const recall of rows) {
+      for (const upc of recall.upcs) {
+        const existing = await ctx.db
+          .query("recallUpcs")
+          .withIndex("by_upc", (q) => q.eq("upc", upc))
+          .take(20);
+        if (!existing.some((r) => r.recallId === recall._id)) {
+          await ctx.db.insert("recallUpcs", { upc, recallId: recall._id });
+          upserted++;
+        }
+      }
+    }
+    return {
+      nextCursor: rows.length === 250 ? rows[rows.length - 1].publishedAt : null,
+      upserted,
+    };
   },
 });
 
