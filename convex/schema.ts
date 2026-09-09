@@ -112,6 +112,9 @@ export default defineSchema({
     markdown: v.optional(v.string()),
     markdownStorageId: v.optional(v.id("_storage")),
     extractedProcedure: v.optional(v.any()),
+    /** Set when extraction is enqueued; cleared on save. Suppresses
+     * duplicate extractions from concurrent first-matches. */
+    extractionEnqueuedAt: v.optional(v.number()),
     crawledAt: v.number(),
     contentHash: v.string(),
   }).index("by_recallId", ["recallId"]),

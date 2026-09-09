@@ -315,6 +315,15 @@ export const retryStalledMatching = internalAction({
       await ctx.runMutation(internal.match.clearNeedsMatchSweep, { recallId });
       await llmPool.enqueueAction(ctx, internal.match.recallChanged, { recallId });
     }
+    // Remedy pipeline re-drives: budget-halted extractions, bot-walled or
+    // failed reads past cool-down, healed URLs, and the 7-day TTL.
+    const remedyIds: Array<Id<"recalls">> = await ctx.runQuery(
+      internal.remedy.matchedRecallIdsMissingPages,
+      {},
+    );
+    for (const recallId of remedyIds) {
+      await crawlPool.enqueueAction(ctx, internal.remedy.scrapeRemedyPage, { recallId });
+    }
     return { alertsSent, adjudicationsEnqueued: flagged.length, sweepsEnqueued: sweeps.length };
   },
 });
@@ -492,7 +501,8 @@ export const recordMatches = internalMutation({
         .query("remedyPages")
         .withIndex("by_recallId", (q) => q.eq("recallId", match.recallId))
         .unique();
-      if (page === null || page.extractedProcedure === undefined) {
+      const { needsRemedyScrape } = await import("./remedy");
+      if (needsRemedyScrape(page, recall, Date.now())) {
         await crawlPool.enqueueAction(ctx, internal.remedy.scrapeRemedyPage, {
           recallId: match.recallId,
         });

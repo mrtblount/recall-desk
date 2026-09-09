@@ -28,6 +28,7 @@ import type * as matchScore from "../matchScore.js";
 import type * as pools from "../pools.js";
 import type * as recalls from "../recalls.js";
 import type * as remedy from "../remedy.js";
+import type * as remedySanitize from "../remedySanitize.js";
 import type * as tags from "../tags.js";
 import type * as users from "../users.js";
 
@@ -58,6 +59,7 @@ declare const fullApi: ApiFromModules<{
   pools: typeof pools;
   recalls: typeof recalls;
   remedy: typeof remedy;
+  remedySanitize: typeof remedySanitize;
   tags: typeof tags;
   users: typeof users;
 }>;

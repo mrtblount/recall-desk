@@ -339,9 +339,16 @@ function RemedyScreen({ matchId, userEmail }: { matchId: Id<"matches">; userEmai
     retailer: item?.retailer,
     quantity: item?.quantity,
   };
+  const recallClosed = data.recall?.status === "closed";
   return (
     <>
       <h2 id="dialog-title">Your remedy,<br />step by step.</h2>
+      {recallClosed && (
+        <p className="dialog-muted">
+          This recall is closed — everything below is historical reference.
+          The remedy may no longer be available.
+        </p>
+      )}
       <div className="detail-block">
         <span className="detail-label">Your item</span>
         <p><strong>{item?.product ?? "(item removed)"}</strong></p>
@@ -401,7 +408,11 @@ function RemedyScreen({ matchId, userEmail }: { matchId: Id<"matches">; userEmai
                       <span aria-hidden="true">{value ? "✓" : "▢"}</span>
                       <div>
                         <strong>{field.name}</strong>
-                        <small>{value ? `${value} — from your receipt` : field.description || "you provide this"}</small>
+                        <small>
+                          {value
+                            ? `${value} — ${/e-?mail/i.test(field.name) ? "your sign-in email" : "from your receipt"}`
+                            : field.description || "you provide this"}
+                        </small>
                       </div>
                     </li>
                   );
@@ -412,7 +423,7 @@ function RemedyScreen({ matchId, userEmail }: { matchId: Id<"matches">; userEmai
         </>
       )}
       <div className="dialog-actions">
-        {procedure?.claim_url ? (
+        {procedure?.claim_url && !recallClosed ? (
           <a className="button button--orange" href={procedure.claim_url} target="_blank" rel="noopener noreferrer">
             Open the claim form <Arrow />
           </a>

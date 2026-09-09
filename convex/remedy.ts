@@ -12,6 +12,7 @@ import {
 } from "./_generated/server";
 import { BudgetHaltError, callStructured, TerminalExtractionError } from "./ai";
 import { sha256Hex } from "./crawl/cpsc";
+import { looksLikeBotWall, sanitizeClaimEmail, sanitizeClaimUrl } from "./remedySanitize";
 import { llmPool } from "./pools";
 import schema from "./schema";
 
@@ -45,6 +46,12 @@ export const scrapeRemedyPage = internalAction({
     }
     if (markdown.trim() === "") {
       console.warn(`remedy scrape returned no markdown for ${recall.remedyUrl}`);
+      return { scraped: false };
+    }
+    if (looksLikeBotWall(markdown)) {
+      // Saving a challenge page would permanently misread the portal as
+      // unreadable; leave no row so the next trigger retries cleanly.
+      console.warn(`remedy scrape hit a bot wall for ${recall.remedyUrl} — not saved`);
       return { scraped: false };
     }
     const contentHash = await sha256Hex(markdown);
@@ -85,8 +92,17 @@ export const saveRemedyPage = internalMutation({
       .withIndex("by_recallId", (q) => q.eq("recallId", args.recallId))
       .unique();
     if (existing !== null && existing.contentHash === args.contentHash) {
-      // Same content; keep any prior extraction.
-      if (existing.extractedProcedure === undefined) {
+      // Same content — drop the superseded blob and keep prior extraction.
+      if (args.markdownStorageId !== undefined) {
+        await ctx.storage.delete(args.markdownStorageId);
+      }
+      const enqueueFresh =
+        existing.extractionEnqueuedAt === undefined ||
+        Date.now() - existing.extractionEnqueuedAt > 10 * 60 * 1000;
+      if (existing.extractedProcedure === undefined && enqueueFresh) {
+        await ctx.db.patch("remedyPages", existing._id, {
+          extractionEnqueuedAt: Date.now(),
+        });
         await llmPool.enqueueAction(ctx, internal.remedy.extractRemedyProcedure, {
           remedyPageId: existing._id,
         });
@@ -104,6 +120,12 @@ export const saveRemedyPage = internalMutation({
         contentHash: args.contentHash,
       });
     } else {
+      if (
+        existing.markdownStorageId !== undefined &&
+        existing.markdownStorageId !== args.markdownStorageId
+      ) {
+        await ctx.storage.delete(existing.markdownStorageId);
+      }
       await ctx.db.replace("remedyPages", existing._id, {
         recallId: args.recallId,
         url: args.url,
@@ -111,8 +133,14 @@ export const saveRemedyPage = internalMutation({
         markdownStorageId: args.markdownStorageId,
         crawledAt: Date.now(),
         contentHash: args.contentHash,
+        extractionEnqueuedAt: Date.now(),
       });
       remedyPageId = existing._id;
+    }
+    if (existing === null) {
+      await ctx.db.patch("remedyPages", remedyPageId, {
+        extractionEnqueuedAt: Date.now(),
+      });
     }
     await llmPool.enqueueAction(ctx, internal.remedy.extractRemedyProcedure, {
       remedyPageId,
@@ -210,24 +238,43 @@ export const extractRemedyProcedure = internalAction({
       }
       throw error;
     }
+    // Trust boundary: the extracted claim URL/email become UI CTAs — they
+    // must be grounded in the scraped page and share its domain.
+    result.claim_url = sanitizeClaimUrl(
+      String(result.claim_url ?? ""),
+      page.url,
+      markdown,
+    );
+    result.claim_email = sanitizeClaimEmail(String(result.claim_email ?? ""), markdown);
     await ctx.runMutation(internal.remedy.saveProcedure, {
       remedyPageId: args.remedyPageId,
       procedure: result,
+      forContentHash: page.contentHash,
     });
     return { extracted: true };
   },
 });
 
 export const saveProcedure = internalMutation({
-  args: { remedyPageId: v.id("remedyPages"), procedure: v.any() },
+  args: {
+    remedyPageId: v.id("remedyPages"),
+    procedure: v.any(),
+    forContentHash: v.optional(v.string()),
+  },
   returns: v.null(),
   handler: async (ctx, args) => {
     const page = await ctx.db.get("remedyPages", args.remedyPageId);
-    if (page !== null) {
-      await ctx.db.patch("remedyPages", args.remedyPageId, {
-        extractedProcedure: args.procedure,
-      });
+    if (page === null) return null;
+    // A slow extraction of superseded content must not clobber the newer
+    // page's extraction (which is already enqueued for the new hash).
+    if (args.forContentHash !== undefined && page.contentHash !== args.forContentHash) {
+      console.warn(`stale extraction dropped for ${args.remedyPageId}`);
+      return null;
     }
+    await ctx.db.patch("remedyPages", args.remedyPageId, {
+      extractedProcedure: args.procedure,
+      extractionEnqueuedAt: undefined,
+    });
     return null;
   },
 });
@@ -249,6 +296,24 @@ export const backfillRemedyPages = internalAction({
   },
 });
 
+/** Should this recall's remedy page be (re)scraped? Covers: no page yet,
+ * extraction pending too long, retryable failed reads (>24h), a healed
+ * remedyUrl differing from the stored page, and a 7-day freshness TTL
+ * (hash dedupe makes unchanged re-scrapes cost one credit, no re-extract). */
+export function needsRemedyScrape(
+  page: { url: string; crawledAt: number; extractedProcedure?: unknown } | null,
+  recall: { remedyUrl?: string },
+  now: number,
+): boolean {
+  if (recall.remedyUrl === undefined) return false;
+  if (page === null) return true;
+  if (page.url !== recall.remedyUrl) return true;
+  const proc = page.extractedProcedure as { is_remedy_page?: boolean } | undefined;
+  if (proc === undefined) return now - page.crawledAt > 30 * 60 * 1000;
+  if (proc.is_remedy_page !== true) return now - page.crawledAt > 24 * 60 * 60 * 1000;
+  return now - page.crawledAt > 7 * 24 * 60 * 60 * 1000;
+}
+
 export const matchedRecallIdsMissingPages = internalQuery({
   args: {},
   returns: v.array(v.id("recalls")),
@@ -263,9 +328,10 @@ export const matchedRecallIdsMissingPages = internalQuery({
         .query("remedyPages")
         .withIndex("by_recallId", (q) => q.eq("recallId", match.recallId))
         .unique();
-      if (page === null || page.extractedProcedure === undefined) {
+      if (needsRemedyScrape(page, recall, Date.now())) {
         out.push(match.recallId);
       }
+      if (out.length >= 5) break;
     }
     return out;
   },
