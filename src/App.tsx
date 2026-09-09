@@ -2,8 +2,9 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { useAuthActions } from "@convex-dev/auth/react";
 import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { api } from "../convex/_generated/api";
-import type { Doc } from "../convex/_generated/dataModel";
+import type { Doc, Id } from "../convex/_generated/dataModel";
 import heroCollage from "./assets/hero-collage.webp";
+import { prefillFor } from "./lib/prefill";
 
 const REPO = "https://github.com/mrtblount/recall-desk";
 
@@ -83,7 +84,7 @@ const Brand = () => (
   </a>
 );
 
-function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
+function DeskScreen({ onSampleClaim, onOpenRemedy }: { onSampleClaim: () => void; onOpenRemedy: (matchId: Id<"matches">) => void }) {
   const { signIn, signOut } = useAuthActions();
   const desk = useQuery(api.users.myDesk);
   const items = useQuery(api.items.myItems, desk ? {} : "skip");
@@ -241,14 +242,10 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
                         official notice ↗
                       </a>
                     )}
-                    {recall?.remedyUrl && recall.status !== "closed" && (
-                      <>
-                        {" · "}
-                        <a href={recall.remedyUrl} target="_blank" rel="noopener noreferrer" title="Extracted automatically from the official notice">
-                          start the remedy ↗
-                        </a>
-                      </>
-                    )}
+                    {" · "}
+                    <button className="text-link" style={{ font: "inherit", padding: 0, border: 0, background: "none", cursor: "pointer" }} onClick={() => onOpenRemedy(match._id)}>
+                      remedy checklist →
+                    </button>
                     {match.state === "notified" ? " · alerted by email" : ""}
                   </small>
                 </div>
@@ -315,10 +312,137 @@ function DeskScreen({ onSampleClaim }: { onSampleClaim: () => void }) {
   );
 }
 
+function RemedyScreen({ matchId, userEmail }: { matchId: Id<"matches">; userEmail: string | null }) {
+  const data = useQuery(api.remedy.remedyForMatch, { matchId });
+  if (data === undefined) return <p className="dialog-muted">Loading…</p>;
+  if (data === null) return <p className="dialog-muted">This match isn't on your desk.</p>;
+  const { item, recall, remedyPage } = data;
+  const procedure = remedyPage?.extractedProcedure as
+    | {
+        is_remedy_page?: boolean;
+        summary?: string;
+        steps?: string[];
+        required_fields?: Array<{ name: string; description: string }>;
+        claim_url?: string;
+        claim_email?: string;
+        deadline?: string;
+        options?: string[];
+      }
+    | undefined;
+  const prefillSrc = {
+    email: userEmail,
+    product: item?.product,
+    brand: item?.brand,
+    model: item?.model,
+    upc: item?.upc,
+    purchaseDate: item?.purchaseDate,
+    retailer: item?.retailer,
+    quantity: item?.quantity,
+  };
+  return (
+    <>
+      <h2 id="dialog-title">Your remedy,<br />step by step.</h2>
+      <div className="detail-block">
+        <span className="detail-label">Your item</span>
+        <p><strong>{item?.product ?? "(item removed)"}</strong></p>
+      </div>
+      <div className="detail-block">
+        <span className="detail-label">The recall</span>
+        <p>{recall?.title ?? "(unavailable)"}{recall?.status === "closed" ? " · now closed" : ""}</p>
+      </div>
+      {recall?.remedyUrl === undefined ? (
+        <div className="detail-block">
+          <span className="detail-label">No self-serve portal</span>
+          <p>
+            The official notice doesn't publish a self-serve remedy portal.
+            {recall?.consumerContact ? ` Contact from the notice: ${recall.consumerContact}` : " Use the official notice for contact instructions."}
+          </p>
+        </div>
+      ) : procedure === undefined ? (
+        <div className="detail-block">
+          <span className="detail-label">Reading the manufacturer's page…</span>
+          <p>We're fetching and reading the remedy page right now — this view updates by itself, usually within a minute.</p>
+        </div>
+      ) : procedure.is_remedy_page !== true ? (
+        <div className="detail-block">
+          <span className="detail-label">Portal unreadable</span>
+          <p>The linked page didn't read as a remedy portal — use the official notice below.</p>
+        </div>
+      ) : (
+        <>
+          {procedure.summary && (
+            <div className="detail-block">
+              <span className="detail-label">The remedy</span>
+              <p>
+                {procedure.summary}
+                {procedure.options && procedure.options.length > 0 ? ` Options: ${procedure.options.join(", ")}.` : ""}
+                {procedure.deadline ? ` Deadline: ${procedure.deadline}.` : ""}
+              </p>
+            </div>
+          )}
+          {procedure.steps && procedure.steps.length > 0 && (
+            <div className="detail-block">
+              <span className="detail-label">Steps</span>
+              <ol className="sample-timeline">
+                {procedure.steps.slice(0, 8).map((step, i) => (
+                  <li key={i}><span>{String(i + 1).padStart(2, "0")}</span><div><small>{step}</small></div></li>
+                ))}
+              </ol>
+            </div>
+          )}
+          {procedure.required_fields && procedure.required_fields.length > 0 && (
+            <div className="detail-block">
+              <span className="detail-label">What the form asks for — prefilled from your receipt</span>
+              <ul className="sample-timeline">
+                {procedure.required_fields.slice(0, 12).map((field, i) => {
+                  const value = prefillFor(field.name, prefillSrc);
+                  return (
+                    <li key={i}>
+                      <span aria-hidden="true">{value ? "✓" : "▢"}</span>
+                      <div>
+                        <strong>{field.name}</strong>
+                        <small>{value ? `${value} — from your receipt` : field.description || "you provide this"}</small>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+      <div className="dialog-actions">
+        {procedure?.claim_url ? (
+          <a className="button button--orange" href={procedure.claim_url} target="_blank" rel="noopener noreferrer">
+            Open the claim form <Arrow />
+          </a>
+        ) : recall?.remedyUrl && recall.status !== "closed" ? (
+          <a className="button button--orange" href={recall.remedyUrl} target="_blank" rel="noopener noreferrer">
+            Open the remedy page <Arrow />
+          </a>
+        ) : null}
+        {recall && (
+          <a className="button button--outline" href={recall.url} target="_blank" rel="noopener noreferrer">
+            Official notice
+          </a>
+        )}
+      </div>
+      {procedure?.claim_email && (
+        <p className="dialog-muted">Claims contact on the page: {procedure.claim_email}</p>
+      )}
+      <p className="dialog-muted">
+        Extracted automatically by AI from the manufacturer's remedy page —
+        verify each detail against the page itself before submitting anything.
+      </p>
+    </>
+  );
+}
+
 type Screen =
   | { kind: "welcome" } | { kind: "desk" } | { kind: "claim" } | { kind: "approve" }
   | { kind: "about" } | { kind: "privacy" } | { kind: "sources" }
-  | { kind: "recall"; recall: Recall };
+  | { kind: "recall"; recall: Recall }
+  | { kind: "remedy"; matchId: Id<"matches"> };
 
 function RecallCard({ recall, onShow }: { recall: Recall; onShow: () => void }) {
   return (
@@ -413,6 +537,11 @@ function RecallDetail({ recall, onWelcome }: { recall: Recall; onWelcome: () => 
   );
 }
 
+function RemedyScreenWrapper({ matchId }: { matchId: Id<"matches"> }) {
+  const desk = useQuery(api.users.myDesk);
+  return <RemedyScreen matchId={matchId} userEmail={desk?.email ?? null} />;
+}
+
 export default function App() {
   const stats = useQuery(api.recalls.stats);
   const [now, setNow] = useState(() => Date.now());
@@ -463,6 +592,7 @@ export default function App() {
   const dialogLabel =
     screen?.kind === "recall"
       ? `Official ${SOURCE_LABEL[screen.recall.source]} ${noticeKind(screen.recall)} · ${fmtDate(screen.recall.publishedAt)}${screen.recall.status === "closed" ? " · CLOSED" : screen.recall.status === "expanded" ? " · EXPANDED" : ""}`
+      : screen?.kind === "remedy" ? "Remedy checklist"
       : screen?.kind === "welcome" ? "The personal desk · Preview"
       : screen?.kind === "desk" ? "My desk"
       : screen?.kind === "claim" ? "Your approval comes first · Sample preview"
@@ -474,6 +604,8 @@ export default function App() {
   let dialogBody: ReactNode = null;
   if (screen?.kind === "recall") {
     dialogBody = <RecallDetail recall={screen.recall} onWelcome={open("welcome")} />;
+  } else if (screen?.kind === "remedy") {
+    dialogBody = <RemedyScreenWrapper matchId={screen.matchId} />;
   } else if (screen?.kind === "welcome") {
     dialogBody = (
       <>
@@ -492,7 +624,12 @@ export default function App() {
       </>
     );
   } else if (screen?.kind === "desk") {
-    dialogBody = <DeskScreen onSampleClaim={open("claim")} />;
+    dialogBody = (
+      <DeskScreen
+        onSampleClaim={open("claim")}
+        onOpenRemedy={(matchId) => setScreen({ kind: "remedy", matchId })}
+      />
+    );
   } else if (screen?.kind === "claim") {
     const remedyWord = sample?.remedyOptions[0]?.toLowerCase() ?? "remedy";
     dialogBody = (

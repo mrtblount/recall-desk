@@ -13,7 +13,7 @@ import {
 import { BudgetHaltError, callStructured, TerminalExtractionError } from "./ai";
 import { sendGuarded } from "./mail";
 import { CANDIDATE_MIN_SCORE, itemRecallScore } from "./matchScore";
-import { llmPool } from "./pools";
+import { crawlPool, llmPool } from "./pools";
 import schema from "./schema";
 
 const MAX_CANDIDATES = 6;
@@ -478,6 +478,25 @@ export const recordMatches = internalMutation({
         remedyOption: recall.remedyOptions[0] ?? null,
         confidence: verdict.confidence,
       });
+    }
+    // M8: fetch the manufacturer's remedy page for newly matched recalls —
+    // transactional with the match insert.
+    const crawled = new Set<string>();
+    for (const c of created) {
+      const match = await ctx.db.get("matches", c.matchId);
+      if (match === null || crawled.has(match.recallId)) continue;
+      crawled.add(match.recallId);
+      const recall = await ctx.db.get("recalls", match.recallId);
+      if (recall === null || recall.remedyUrl === undefined) continue;
+      const page = await ctx.db
+        .query("remedyPages")
+        .withIndex("by_recallId", (q) => q.eq("recallId", match.recallId))
+        .unique();
+      if (page === null || page.extractedProcedure === undefined) {
+        await crawlPool.enqueueAction(ctx, internal.remedy.scrapeRemedyPage, {
+          recallId: match.recallId,
+        });
+      }
     }
     if (created.length > 0) {
       const stats = await ctx.db.query("publicStats").unique();
