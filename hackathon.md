@@ -12,7 +12,7 @@
 - **Auth:** Convex Auth
 - **AI models:** gpt-5.6-luna (receipt extraction; terra staged for escalation)
 - **Started:** 2026-08-30T06:30:40Z
-- **Last updated:** 2026-09-09T02:10:03Z
+- **Last updated:** 2026-09-09T02:49:34Z
 
 ## What this is
 
@@ -96,3 +96,10 @@ Session M6: a forwarded receipt becomes item cards, live. The whole lane runs on
 Field notes that cost an hour and now cost nobody: AgentMail fires no `message.received` for self-sends (the inbound test needs a second sender inbox), a just-created inbox cannot send immediately, and `client_id` is the create-inbox idempotency key. A 22-agent adversarial review then confirmed 10 findings — none refuted — and reshaped the security posture before prod: the From-header routing fallback was deleted outright (From is attacker-controlled, and a display-name trick defeated even DMARC-passing mail; the plus-alias tag is now the only routing key), deterministic extraction failures became terminal instead of retry-billing up to 6x, budget-halted receipts recover via a cron after the daily reset instead of silently vanishing, per-user daily extraction caps landed, bidi control characters are stripped from stored item text, and items gained owner-checked dismissal. 25 tests green.
 
 Next: M7 — the matcher (cheap prefilter + LLM adjudication over candidates only) and the recall alert email.
+
+### 2026-09-09 - (evening) 
+Session M7: the matcher — and the product's promise held to five seconds. Two stages, exactly as designed: a deterministic prefilter (full-text search over recall titles plus a UPC→recall lookup table, then token/model/UPC scoring — no LLM ever scans the 1,500-recall corpus) hands at most six candidates to one comparative `gpt-5.6-luna` adjudication per item, instructed that same-brand-alone is not a match. Matches persist with both the mechanical evidence and the model's rationale, and the alert email goes out through the hard outbound allowlist. The gate allowed sixty seconds from seeded recalled item to flag-plus-email; the live run took **five** — three genuinely recalled items (power bank, teether, chair) matched with rationales citing their actual model numbers, three benign items produced zero false positives, and both alert emails were verified delivered by reading them back from the inbox. Matching triggers in both directions: new items adjudicate transactionally with their insert, and every changed active recall from the 2-hour crawl sweeps existing items.
+
+The adversarial review (22 agents, 10 findings confirmed, none refuted) then attacked the part a passing demo hides: scale and failure paths. The recall→items sweep had been a `take(1000)` scan that would only ever see the thousand oldest items — the "emailed the day something you own is recalled" promise would have silently died for item #1001 — so the sweep now runs inverted through a dedicated items search index and scales with hits, not table size. A UPC lookup table now guarantees a terse receipt with a listed UPC can never be gated out by title tokens. Alerts became state-driven with a 30-minute recovery cron (transient send failures, budget-halted adjudications, and sweep-capped recalls all re-drive instead of stranding), and the alert email itself was made honest: confidence-gated at 70%, "appears to match — confirm your model against the official notice," official links only, with the extracted remedy link kept on the desk where its provenance is disclosed. Day's total LLM spend across extraction and matching: about a tenth of a cent.
+
+Next: M8 — the Firecrawl remedy-page crawl on match and procedure extraction (the Louisville-portal showcase).
