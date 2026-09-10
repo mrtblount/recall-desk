@@ -45,6 +45,7 @@ export const draftClaim = action({
       itemText: string;
       recallText: string;
       procedureText: string;
+      remedyInstructions: string;
       recipient: string;
       userEmail: string;
       existingClaimId: Id<"claims"> | null;
@@ -61,11 +62,16 @@ export const draftClaim = action({
         purpose: "claim-drafting",
         model: env.OPENAI_MODEL_CHEAP ?? "gpt-5.6-luna",
         system:
-          "You draft a polite, factual consumer recall-claim email. Use ONLY the facts provided. " +
-          "Never invent model numbers, dates, addresses, or promises. For required information the data " +
-          "does not contain, write a [bracketed placeholder] the user will fill in. " +
-          "Keep it under 180 words. Sign with the user's email address.",
-        user: `${bundle.itemText}\n\n${bundle.recallText}\n\n${bundle.procedureText}\n\nUser's email (signature): ${bundle.userEmail}`,
+          "You draft the consumer's recall-claim email. When the notice states a claim procedure, " +
+          "the email must CARRY OUT that procedure — state that the required steps have been completed " +
+          "(e.g. the item was destroyed as instructed), reference the evidence provided, and make the " +
+          "specific request (refund, replacement, repair kit) with the details the manufacturer needs. " +
+          "Do NOT merely ask what the next steps are when the steps are already known. " +
+          "Use ONLY the facts provided; never invent model numbers, dates, addresses, or promises. " +
+          "For anything the data does not contain (photos, serial, mailing address), write a " +
+          "[bracketed placeholder] the user completes before sending. Under 200 words. " +
+          "Sign with the user's email address.",
+        user: `${bundle.itemText}\n\n${bundle.recallText}\n\n${bundle.remedyInstructions}\n\n${bundle.procedureText}\n\nUser's email (signature): ${bundle.userEmail}`,
         schemaName: "claim_draft",
         schema: DRAFT_SCHEMA as unknown as Record<string, unknown>,
         maxOutputTokens: 700,
@@ -94,6 +100,7 @@ export const draftContext = internalQuery({
       itemText: v.string(),
       recallText: v.string(),
       procedureText: v.string(),
+      remedyInstructions: v.string(),
       recipient: v.string(),
       userEmail: v.string(),
       existingClaimId: v.union(v.id("claims"), v.null()),
@@ -112,6 +119,7 @@ export const draftContext = internalQuery({
         itemText: "",
         recallText: "",
         procedureText: "",
+        remedyInstructions: "",
         recipient: "",
         userEmail: "",
         existingClaimId: existing._id,
@@ -139,6 +147,12 @@ export const draftContext = internalQuery({
     return {
       itemText: `PURCHASED ITEM: ${item.product}${item.brand ? ` | brand: ${item.brand}` : ""}${item.model ? ` | model: ${item.model}` : ""}${item.upc ? ` | UPC: ${item.upc}` : ""}${item.purchaseDate ? ` | purchased: ${item.purchaseDate}` : ""}${item.retailer ? ` | retailer: ${item.retailer}` : ""}`,
       recallText: `RECALL: ${recall.title} (official notice: ${recall.url})${recall.remedyOptions.length > 0 ? ` | remedy offered: ${recall.remedyOptions.join(", ")}` : ""}`,
+      // The official notice's own instructions — for recalls with no portal
+      // (e.g. "cut the item in half and email a photo") this IS the entire
+      // procedure, and the draft must carry it out rather than ask.
+      remedyInstructions: recall.remedySummary
+        ? `OFFICIAL REMEDY INSTRUCTIONS (carry these out in the email): ${recall.remedySummary}`
+        : "OFFICIAL REMEDY INSTRUCTIONS: none published — make a clear, specific claim request.",
       procedureText:
         procedure.is_remedy_page === true
           ? `REMEDY PAGE SAYS: ${procedure.summary ?? ""}${procedure.required_fields?.length ? ` | the form asks for: ${procedure.required_fields.map((f) => f.name).join(", ")}` : ""}`
@@ -248,17 +262,31 @@ export const getClaim = internalQuery({
 export const markSending = internalMutation({
   args: { claimId: v.id("claims") },
   returns: v.union(
-    v.object({ recipient: v.string(), subject: v.string(), body: v.string() }),
+    v.object({
+      recipient: v.string(),
+      subject: v.string(),
+      body: v.string(),
+      replyTo: v.union(v.string(), v.null()),
+    }),
     v.null(),
   ),
   handler: async (ctx, args) => {
     const claim = await ctx.db.get("claims", args.claimId);
     if (claim === null || claim.state !== "approved") return null;
     await ctx.db.patch("claims", args.claimId, { state: "sending" });
+    // Reply-To is this user's own ingest alias: replies still land in our
+    // inbox (threading + routing intact) but are attributable to them.
+    const user = await ctx.db.get("users", claim.userId);
+    const base = env.AGENTMAIL_RECEIPTS_ADDRESS ?? "";
+    const replyTo =
+      base !== "" && user?.userTag !== undefined
+        ? base.replace("@", `+${user.userTag}@`)
+        : null;
     return {
       recipient: claim.recipient,
       subject: claim.draftSubject,
       body: claim.draftBody,
+      replyTo,
     };
   },
 });
@@ -283,6 +311,7 @@ export const sendClaim = internalAction({
         to: snapshot.recipient,
         subject: snapshot.subject,
         text: snapshot.body,
+        replyTo: snapshot.replyTo ?? undefined,
       });
     } catch (error) {
       await ctx.runMutation(internal.claims.recordSendFailure, {
@@ -530,6 +559,56 @@ export const recoverStuckClaims = internalMutation({
       }
     }
     return { recovered };
+  },
+});
+
+/** Every claim the caller has, newest first — powers the desk's claims list. */
+export const myClaims = query({
+  args: {},
+  returns: v.array(
+    v.object({
+      claim: schema.doc("claims"),
+      matchId: v.id("matches"),
+      product: v.union(v.string(), v.null()),
+      recallTitle: v.union(v.string(), v.null()),
+      lastEventKind: v.union(v.string(), v.null()),
+      lastEventAt: v.union(v.number(), v.null()),
+    }),
+  ),
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
+    const claims = await ctx.db
+      .query("claims")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(30);
+    const out = [];
+    for (const claim of claims) {
+      const match = await ctx.db.get("matches", claim.matchId);
+      const item = match === null ? null : await ctx.db.get("items", match.itemId);
+      const recall = match === null ? null : await ctx.db.get("recalls", match.recallId);
+      const events = await ctx.db
+        .query("claimEvents")
+        .withIndex("by_claimId", (q) => q.eq("claimId", claim._id))
+        .take(40);
+      const last = events.reduce<null | { kind: string; at: number }>(
+        (acc, e) =>
+          acc === null || e._creationTime > acc.at
+            ? { kind: e.kind, at: e._creationTime }
+            : acc,
+        null,
+      );
+      out.push({
+        claim,
+        matchId: claim.matchId,
+        product: item?.product ?? null,
+        recallTitle: recall?.title ?? null,
+        lastEventKind: last?.kind ?? null,
+        lastEventAt: last?.at ?? null,
+      });
+    }
+    return out;
   },
 });
 

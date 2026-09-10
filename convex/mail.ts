@@ -79,6 +79,7 @@ export async function sendGuarded(args: {
   to: string;
   subject: string;
   text: string;
+  replyTo?: string;
 }): Promise<{ messageId: string; threadId: string }> {
   assertAllowedRecipient(args.to);
   const res = await fetch(
@@ -86,7 +87,12 @@ export async function sendGuarded(args: {
     {
       method: "POST",
       headers: authHeaders(),
-      body: JSON.stringify({ to: [args.to], subject: args.subject, text: args.text }),
+      body: JSON.stringify({
+        to: [args.to],
+        subject: args.subject,
+        text: args.text,
+        ...(args.replyTo !== undefined ? { reply_to: args.replyTo } : {}),
+      }),
     },
   );
   if (!res.ok) {

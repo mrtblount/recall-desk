@@ -91,6 +91,40 @@ function DeskScreen({ onSampleClaim, onOpenRemedy, onOpenClaim }: { onSampleClai
   const dismissItem = useMutation(api.items.dismissItem);
   const matches = useQuery(api.match.myMatches, desk ? {} : "skip");
   const dismissMatch = useMutation(api.match.dismissMatch);
+  const claims = useQuery(api.claims.myClaims, desk ? {} : "skip");
+  const ingestPasted = useAction(api.receipts.ingestPastedReceipt);
+  const ingestUploaded = useAction(api.receipts.ingestUploadedReceipt);
+  const uploadUrl = useMutation(api.receipts.generateReceiptUploadUrl);
+  const [paste, setPaste] = useState("");
+  const [showPaste, setShowPaste] = useState(false);
+  const [intakeBusy, setIntakeBusy] = useState("");
+  const [intakeMsg, setIntakeMsg] = useState("");
+  const [intakeErr, setIntakeErr] = useState("");
+
+  const handleUpload = async (file: File) => {
+    setIntakeErr("");
+    setIntakeMsg("");
+    setIntakeBusy("Reading your receipt…");
+    try {
+      const url = await uploadUrl({});
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": file.type },
+        body: file,
+      });
+      const { storageId } = (await res.json()) as { storageId: Id<"_storage"> };
+      const out = await ingestUploaded({ storageId });
+      setIntakeMsg(
+        out.itemsCreated > 0
+          ? `Added ${out.itemsCreated} item${out.itemsCreated === 1 ? "" : "s"} from your photo.`
+          : "No purchased items found in that photo — try a clearer shot.",
+      );
+    } catch (error) {
+      setIntakeErr(error instanceof Error ? error.message : "Upload failed.");
+    } finally {
+      setIntakeBusy("");
+    }
+  };
   const [step, setStep] = useState<"email" | "code">("email");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
@@ -206,16 +240,81 @@ function DeskScreen({ onSampleClaim, onOpenRemedy, onOpenClaim }: { onSampleClai
       <h2 id="dialog-title">One place.<br />One less thing.</h2>
       <p>Signed in as <strong>{desk.email ?? "your account"}</strong>.</p>
       <div className="detail-block">
-        <span className="detail-label">Your receipt forwarding address</span>
-        {desk.ingestAddress ? (
-          <p><strong>{desk.ingestAddress}</strong><br />Forward retailer receipts here — they become the items on your desk.</p>
-        ) : (
-          <p>
-            <strong>Reserved for you (tag: {desk.userTag ?? "…"})</strong> — the
-            receipts inbox isn't connected yet; your personal forwarding
-            address will appear here once it is.
-          </p>
+        <span className="detail-label">Add a receipt</span>
+        <div className="dialog-actions" style={{ marginTop: 4 }}>
+          <label className="button button--orange" style={{ cursor: "pointer" }}>
+            {intakeBusy !== "" ? intakeBusy : "Upload a photo"} <Arrow />
+            <input
+              type="file"
+              accept="image/*"
+              hidden
+              disabled={intakeBusy !== ""}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file) void handleUpload(file);
+              }}
+            />
+          </label>
+          <button
+            className="button button--outline"
+            onClick={() => setShowPaste((v) => !v)}
+            aria-expanded={showPaste}
+          >
+            {showPaste ? "Hide paste box" : "Paste receipt text"}
+          </button>
+        </div>
+        {showPaste && (
+          <>
+            <textarea
+              aria-label="Paste your receipt text"
+              placeholder="Paste an order confirmation or receipt here…"
+              value={paste}
+              onChange={(e) => setPaste(e.target.value)}
+              rows={6}
+              maxLength={15000}
+              style={{ width: "100%", marginTop: 10, font: "inherit", fontSize: 14, padding: 10, border: "1px solid var(--line)", borderRadius: 5, background: "var(--paper)", color: "inherit", resize: "vertical" }}
+            />
+            <div className="dialog-actions">
+              <button
+                className="button button--orange"
+                disabled={intakeBusy !== "" || paste.trim().length < 20}
+                onClick={async () => {
+                  setIntakeErr("");
+                  setIntakeMsg("");
+                  setIntakeBusy("Reading…");
+                  try {
+                    const out = await ingestPasted({ text: paste });
+                    setIntakeMsg(
+                      out.itemsCreated > 0
+                        ? `Added ${out.itemsCreated} item${out.itemsCreated === 1 ? "" : "s"}.`
+                        : "No purchased items found in that text.",
+                    );
+                    setPaste("");
+                    setShowPaste(false);
+                  } catch (error) {
+                    setIntakeErr(error instanceof Error ? error.message : "Couldn't read that.");
+                  } finally {
+                    setIntakeBusy("");
+                  }
+                }}
+              >
+                {intakeBusy !== "" ? "Reading…" : "Add these items"} <Arrow />
+              </button>
+            </div>
+          </>
         )}
+        {intakeMsg && <p className="dialog-muted" role="status">{intakeMsg}</p>}
+        {intakeErr && <p className="dialog-muted" role="alert">{intakeErr}</p>}
+        <p className="dialog-muted" style={{ marginTop: 8 }}>
+          Prefer email? Forward receipts to{" "}
+          {desk.ingestAddress ? (
+            <strong>{desk.ingestAddress}</strong>
+          ) : (
+            <em>your address (activating)</em>
+          )}{" "}
+          — anything you send there lands here automatically.
+        </p>
       </div>
       {matches !== undefined && matches.length > 0 && (
         <div className="detail-block">
@@ -242,14 +341,25 @@ function DeskScreen({ onSampleClaim, onOpenRemedy, onOpenClaim }: { onSampleClai
                         official notice ↗
                       </a>
                     )}
-                    {" · "}
-                    <button className="text-link" style={{ font: "inherit", padding: 0, border: 0, background: "none", cursor: "pointer" }} onClick={() => onOpenRemedy(match._id)}>
-                      remedy checklist →
-                    </button>
+                    {recall?.remedyUrl && (
+                      <>
+                        {" · "}
+                        <button className="text-link" style={{ font: "inherit", padding: 0, border: 0, background: "none", cursor: "pointer" }} onClick={() => onOpenRemedy(match._id)}>
+                          remedy checklist →
+                        </button>
+                      </>
+                    )}
                     {" · "}
                     <button className="text-link" style={{ font: "inherit", padding: 0, border: 0, background: "none", cursor: "pointer" }} onClick={() => onOpenClaim(match._id)}>
-                      {match.state === "claim_sent" || match.state === "acknowledged" ? "claim timeline →" : "file a claim →"}
+                      {match.state === "claim_sent" || match.state === "acknowledged"
+                        ? "claim timeline →"
+                        : recall?.remedyUrl
+                          ? "email a claim instead →"
+                          : "file the claim by email →"}
                     </button>
+                    {!recall?.remedyUrl && recall?.consumerContact && !/[\w.+-]+@/.test(recall.consumerContact) && (
+                      <> · contact: {recall.consumerContact}</>
+                    )}
                     {match.state === "notified" ? " · alerted by email" : ""}
                   </small>
                 </div>
@@ -261,6 +371,37 @@ function DeskScreen({ onSampleClaim, onOpenRemedy, onOpenClaim }: { onSampleClai
                 >
                   <svg className="icon" aria-hidden="true"><use href="#i-close" /></svg>
                 </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {claims !== undefined && claims.length > 0 && (
+        <div className="detail-block">
+          <span className="detail-label">Your claims · {claims.length}</span>
+          <ul className="sample-timeline">
+            {claims.map((row) => (
+              <li key={row.claim._id}>
+                <span aria-hidden="true">{CLAIM_ICON[row.claim.state] ?? "•"}</span>
+                <div>
+                  <strong>{row.product ?? "(item removed)"}</strong>
+                  <small>
+                    {CLAIM_STATE_LABEL[row.claim.state] ?? row.claim.state}
+                    {row.lastEventAt
+                      ? ` · ${new Date(row.lastEventAt).toLocaleDateString()}`
+                      : ""}
+                    {" · to "}
+                    {row.claim.recipient || "(no recipient)"}
+                    {" · "}
+                    <button
+                      className="text-link"
+                      style={{ font: "inherit", padding: 0, border: 0, background: "none", cursor: "pointer" }}
+                      onClick={() => onOpenClaim(row.matchId)}
+                    >
+                      open →
+                    </button>
+                  </small>
+                </div>
               </li>
             ))}
           </ul>
@@ -453,6 +594,21 @@ function RemedyScreen({ matchId, userEmail }: { matchId: Id<"matches">; userEmai
   );
 }
 
+const CLAIM_STATE_LABEL: Record<string, string> = {
+  draft: "Draft — needs your approval",
+  approved: "Approved, queued to send",
+  sending: "Sending…",
+  sent: "Sent — awaiting a reply",
+  delivered: "Delivered — awaiting a reply",
+  replied: "Manufacturer replied",
+  completed: "Resolved",
+};
+
+const CLAIM_ICON: Record<string, string> = {
+  draft: "✎", approved: "→", sending: "→", sent: "✉",
+  delivered: "✉", replied: "↩", completed: "✓",
+};
+
 const EVENT_LABEL: Record<string, string> = {
   drafted: "Draft written",
   edited: "Draft edited",
@@ -469,6 +625,7 @@ const EVENT_LABEL: Record<string, string> = {
 
 function ClaimScreen({ matchId }: { matchId: Id<"matches"> }) {
   const data = useQuery(api.claims.claimForMatch, { matchId });
+  const remedy = useQuery(api.remedy.remedyForMatch, { matchId });
   const draftClaim = useAction(api.claims.draftClaim);
   const editDraft = useMutation(api.claims.editClaimDraft);
   const approve = useMutation(api.claims.approveClaim);
@@ -480,15 +637,24 @@ function ClaimScreen({ matchId }: { matchId: Id<"matches"> }) {
   const [body, setBody] = useState<string | null>(null);
 
   if (data === undefined) return <p className="dialog-muted">Loading…</p>;
+  const portalUrl = remedy?.recall?.remedyUrl ?? null;
 
   if (data === null) {
     return (
       <>
         <h2 id="dialog-title">Your claim,<br />ready to review.</h2>
+        {portalUrl && (
+          <p className="dialog-muted">
+            This recall has a self-serve portal — the remedy checklist is
+            usually the faster route. Email is the fallback when a form isn't
+            an option.
+          </p>
+        )}
         <p>
-          We'll draft the claim email from your receipt, the official recall,
-          and the manufacturer's remedy page. Nothing is sent until you
-          approve it.
+          We'll draft the claim email from your receipt, the official recall
+          notice's own instructions, and the manufacturer's remedy page —
+          carrying out the stated steps, not just asking about them. Nothing
+          is sent until you approve it.
         </p>
         <div className="dialog-actions">
           <button

@@ -93,6 +93,8 @@ type StructuredCall = {
   model: string;
   system: string;
   user: string;
+  /** data: URL of a receipt photo, for the upload path. */
+  imageDataUrl?: string;
   schemaName: string;
   schema: Record<string, unknown>;
   maxOutputTokens: number;
@@ -146,9 +148,20 @@ export async function callStructured(
           {
             role: "user",
             content:
-              attempt === 0
-                ? call.user
-                : `${call.user}\n\nIMPORTANT: your previous answer was not valid JSON for the schema. Return ONLY valid JSON.`,
+              call.imageDataUrl !== undefined
+                ? [
+                    {
+                      type: "input_text",
+                      text:
+                        attempt === 0
+                          ? call.user
+                          : `${call.user}\n\nIMPORTANT: your previous answer was not valid JSON for the schema. Return ONLY valid JSON.`,
+                    },
+                    { type: "input_image", image_url: call.imageDataUrl },
+                  ]
+                : attempt === 0
+                  ? call.user
+                  : `${call.user}\n\nIMPORTANT: your previous answer was not valid JSON for the schema. Return ONLY valid JSON.`,
           },
         ],
         text: {
@@ -210,7 +223,13 @@ export async function callStructured(
   throw new Error("unreachable");
 }
 
-const RECEIPT_SCHEMA = {
+export const RECEIPT_SYSTEM_PROMPT =
+  "You extract purchased items from retailer receipts (email text, pasted text, or a photo of a receipt). " +
+  "Only list physical products actually purchased — never invent, never include suggestions, ads, or subscriptions. " +
+  "If the content is not a purchase receipt or order confirmation, set is_receipt to false and items to an empty array. " +
+  "Use empty strings for unknown fields, digits only for UPC.";
+
+export const RECEIPT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["is_receipt", "retailer", "order_date", "confidence", "items"],

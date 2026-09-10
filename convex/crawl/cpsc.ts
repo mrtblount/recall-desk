@@ -47,10 +47,22 @@ export async function sha256Hex(text: string): Promise<string> {
  * corpus shape. Returns null for records missing the identity fields; the
  * caller counts those as skipped instead of inventing values.
  */
+/** CPSC occasionally publishes the notice URL in the Title field (verified
+ * live: RecallID 10976, 2026-09-10). Their URL slug IS the title, so derive
+ * it from the slug rather than showing a raw URL — faithful, not invented. */
+export function titleFromUrlSlug(url: string): string {
+  const slug = url.split("?")[0].split("/").filter(Boolean).pop() ?? "";
+  return decodeURIComponent(slug)
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function mapRecall(rec: Record<string, unknown>): Omit<CrawlDoc, "contentHash"> | null {
   const recallId = rec.RecallID;
-  const title = cap(asString(rec.Title), 500);
+  const rawTitle = cap(asString(rec.Title), 500);
   const url = asString(rec.URL);
+  const title = /^https?:\/\//i.test(rawTitle) ? titleFromUrlSlug(rawTitle || url) : rawTitle;
   if (typeof recallId !== "number" || title === "" || url === "") return null;
 
   // Dates arrive as "2026-09-03T00:00:00" with no zone — pin to UTC.

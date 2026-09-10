@@ -18,3 +18,17 @@
 
 .flag-expanded { color: var(--orange); font-weight: 700; letter-spacing: 0.08em; }
 .flag-closed { color: var(--muted); letter-spacing: 0.08em; }
+
+/* A single long token (CPSC occasionally publishes a URL as a title) must
+   wrap inside its card, never overlap the neighbouring column. */
+.product-title,
+.product-title a,
+.product-title button,
+.product-hazard,
+.product-meta,
+.dialog-body p,
+.sample-timeline small,
+.detail-block p {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
