@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { useAction, useMutation, usePaginatedQuery, useQuery } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import { api } from "../convex/_generated/api";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import heroCollage from "./assets/hero-collage.webp";
+import { ImagePrepError, prepareReceiptImage } from "./lib/imagePrep";
 import { prefillFor } from "./lib/prefill";
 
 const REPO = "https://github.com/mrtblount/recall-desk";
@@ -84,376 +86,680 @@ const Brand = () => (
   </a>
 );
 
-function DeskScreen({ onSampleClaim, onOpenRemedy, onOpenClaim }: { onSampleClaim: () => void; onOpenRemedy: (matchId: Id<"matches">) => void; onOpenClaim: (matchId: Id<"matches">) => void }) {
-  const { signIn, signOut } = useAuthActions();
-  const desk = useQuery(api.users.myDesk);
-  const items = useQuery(api.items.myItems, desk ? {} : "skip");
-  const dismissItem = useMutation(api.items.dismissItem);
-  const matches = useQuery(api.match.myMatches, desk ? {} : "skip");
-  const dismissMatch = useMutation(api.match.dismissMatch);
-  const claims = useQuery(api.claims.myClaims, desk ? {} : "skip");
-  const ingestPasted = useAction(api.receipts.ingestPastedReceipt);
-  const ingestUploaded = useAction(api.receipts.ingestUploadedReceipt);
-  const uploadUrl = useMutation(api.receipts.generateReceiptUploadUrl);
-  const [paste, setPaste] = useState("");
-  const [showPaste, setShowPaste] = useState(false);
-  const [intakeBusy, setIntakeBusy] = useState("");
-  const [intakeMsg, setIntakeMsg] = useState("");
-  const [intakeErr, setIntakeErr] = useState("");
+/** The URL fragment is the router: "#desk" is the desk page, anything else the home board. */
+type Route = "home" | "desk";
+const routeFromHash = (): Route => (location.hash === "#desk" ? "desk" : "home");
+/** Setting the fragment is the navigation: it fires hashchange, which drives `route`. */
+const navigateHash = (hash: string) => {
+  window.location.hash = hash;
+};
 
-  const handleUpload = async (file: File) => {
-    setIntakeErr("");
-    setIntakeMsg("");
-    setIntakeBusy("Reading your receipt…");
-    try {
-      const url = await uploadUrl({});
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": file.type },
-        body: file,
-      });
-      const { storageId } = (await res.json()) as { storageId: Id<"_storage"> };
-      const out = await ingestUploaded({ storageId });
-      setIntakeMsg(
-        out.itemsCreated > 0
-          ? `Added ${out.itemsCreated} item${out.itemsCreated === 1 ? "" : "s"} from your photo.`
-          : "No purchased items found in that photo — try a clearer shot.",
-      );
-    } catch (error) {
-      setIntakeErr(error instanceof Error ? error.message : "Upload failed.");
-    } finally {
-      setIntakeBusy("");
-    }
-  };
+type DeskInfo = NonNullable<FunctionReturnType<typeof api.users.myDesk>>;
+
+/**
+ * Backend errors reach the client wrapped ("[Request ID: …] Server Error\nUncaught Error: …\n at …");
+ * the text inside is written for the user, so unwrap it rather than showing plumbing.
+ */
+function userMessage(error: unknown, fallback: string): string {
+  if (!(error instanceof Error)) return fallback;
+  const data = (error as { data?: unknown }).data;
+  if (typeof data === "string" && data.trim() !== "") return data.trim();
+  const text = error.message
+    .replace(/^\[CONVEX [^\]]*\]\s*/i, "")
+    .replace(/^\[Request ID: [^\]]*\]\s*/i, "")
+    .replace(/^Server Error:?\s*/i, "")
+    .replace(/^Uncaught (?:Convex)?Error:\s*/i, "")
+    .split("\n")[0]
+    ?.trim();
+  // Production redacts non-ConvexError messages to plumbing; never show that.
+  if (!text || /^(server error|uncaught|\[)/i.test(text) || /called by client/i.test(text)) return fallback;
+  return text;
+}
+
+/** How an item reached the desk, from the ledger-id prefix its ingestion path stamped. */
+function entryLabel(sourceMessageId: string): string {
+  if (sourceMessageId.startsWith("manual:")) return "typed in";
+  if (sourceMessageId.startsWith("photo:")) return "photo";
+  if (sourceMessageId.startsWith("paste:")) return "pasted";
+  return "email";
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** Email → 8-digit code, both through Convex Auth. Shown on the desk page when signed out. */
+function SignInForms() {
+  const { signIn } = useAuthActions();
   const [step, setStep] = useState<"email" | "code">("email");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  if (desk === undefined) {
-    return <p className="dialog-muted">Loading your desk…</p>;
-  }
-
-  if (desk === null) {
-    // Signed out: email -> code, both through Convex Auth.
-    const sendCode = async (e: FormEvent<HTMLFormElement>) => {
-      e.preventDefault();
-      setError("");
-      setBusy(true);
-      try {
-        // Convex Auth does NOT normalize case — do it here, identically on
-        // both steps, or Foo@x.com and foo@x.com become different accounts.
-        const normalized = email.trim().toLowerCase();
-        setEmail(normalized);
-        await signIn("recall-otp", { email: normalized });
-        setStep("code");
-      } catch {
-        setError("We couldn't send a code right now — email delivery may still be connecting. Check the address and try again soon.");
-      } finally {
-        setBusy(false);
-      }
-    };
-    const verifyCode = async (e: FormEvent<HTMLFormElement>) => {
-      e.preventDefault();
-      const form = e.currentTarget;
-      const code = new FormData(form).get("code");
-      setError("");
-      setBusy(true);
-      try {
-        await signIn("recall-otp", { email, code: String(code ?? "").trim() });
-        // success re-renders via myDesk
-      } catch {
-        setError("That code didn't match (or expired). Resend a fresh one below.");
-      } finally {
-        setBusy(false);
-      }
-    };
-    return (
-      <>
-        <h2 id="dialog-title">Your desk.<br />One sign-in away.</h2>
-        {step === "email" ? (
-          <form onSubmit={sendCode}>
-            <p>Enter your email and we'll send an 8-digit sign-in code. No passwords.</p>
-            <div className="search-row" style={{ marginTop: 14 }}>
-              <div className="search-box">
-                <label htmlFor="desk-email" className="sr-only">Email address</label>
-                <input id="desk-email" name="email" type="email" required placeholder="you@example.com" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-              </div>
-            </div>
-            <div className="dialog-actions">
-              <button className="button button--orange" type="submit" disabled={busy}>
-                {busy ? "Sending…" : "Email me a code"} <Arrow />
-              </button>
-            </div>
-            {error && <p className="dialog-muted" role="alert">{error}</p>}
-        <p className="dialog-muted">Sign-in codes are delivered by email; your address is used for sign-in and recall alerts, nothing else.</p>
-          </form>
-        ) : (
-          <form onSubmit={verifyCode}>
-            <p>We sent an 8-digit code to <strong>{email}</strong>. Enter it below.</p>
-            <div className="search-row" style={{ marginTop: 14 }}>
-              <div className="search-box">
-                <label htmlFor="desk-code" className="sr-only">Sign-in code</label>
-                <input id="desk-code" name="code" inputMode="numeric" pattern="[0-9]*" required placeholder="12345678" autoComplete="one-time-code" />
-              </div>
-            </div>
-            <div className="dialog-actions">
-              <button className="button button--orange" type="submit" disabled={busy}>
-                {busy ? "Checking…" : "Sign in"} <Arrow />
-              </button>
-              <button
-                className="button button--outline"
-                type="button"
-                disabled={busy}
-                onClick={async () => {
-                  setError("");
-                  setNotice("");
-                  setBusy(true);
-                  try {
-                    await signIn("recall-otp", { email });
-                    setNotice("Code re-sent — check your inbox.");
-                  } catch {
-                    setError("Couldn't resend right now. Wait a moment and try again.");
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                Resend code
-              </button>
-              <button className="button button--outline" type="button" onClick={() => { setStep("email"); setError(""); setNotice(""); }}>
-                Different email
-              </button>
-            </div>
-            {notice && <p className="dialog-muted" role="status">{notice}</p>}
-            {error && <p className="dialog-muted" role="alert">{error}</p>}
-          </form>
-        )}
-      </>
-    );
-  }
-
-  // Signed in: the real desk.
-  return (
-    <>
-      <h2 id="dialog-title">One place.<br />One less thing.</h2>
-      <p>Signed in as <strong>{desk.email ?? "your account"}</strong>.</p>
-      <div className="detail-block">
-        <span className="detail-label">Add a receipt</span>
-        <div className="dialog-actions" style={{ marginTop: 4 }}>
-          <label className="button button--orange" style={{ cursor: "pointer" }}>
-            {intakeBusy !== "" ? intakeBusy : "Upload a photo"} <Arrow />
-            <input
-              type="file"
-              accept="image/*"
-              hidden
-              disabled={intakeBusy !== ""}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                e.target.value = "";
-                if (file) void handleUpload(file);
-              }}
-            />
-          </label>
-          <button
-            className="button button--outline"
-            onClick={() => setShowPaste((v) => !v)}
-            aria-expanded={showPaste}
-          >
-            {showPaste ? "Hide paste box" : "Paste receipt text"}
-          </button>
+  const sendCode = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setError("");
+    setBusy(true);
+    try {
+      // Convex Auth does NOT normalize case — do it here, identically on
+      // both steps, or Foo@x.com and foo@x.com become different accounts.
+      const normalized = email.trim().toLowerCase();
+      setEmail(normalized);
+      await signIn("recall-otp", { email: normalized });
+      setStep("code");
+    } catch {
+      setError("We couldn't send a code right now — email delivery may still be connecting. Check the address and try again soon.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const verifyCode = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const code = new FormData(form).get("code");
+    setError("");
+    setBusy(true);
+    try {
+      await signIn("recall-otp", { email, code: String(code ?? "").trim() });
+      // success re-renders via myDesk
+    } catch {
+      setError("That code didn't match (or expired). Resend a fresh one below.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return step === "email" ? (
+    <form onSubmit={sendCode}>
+      <p>Enter your email and we'll send an 8-digit sign-in code. No passwords.</p>
+      <div className="search-row" style={{ marginTop: 14 }}>
+        <div className="search-box">
+          <label htmlFor="desk-email" className="sr-only">Email address</label>
+          <input id="desk-email" name="email" type="email" required placeholder="you@example.com" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
         </div>
-        {showPaste && (
+      </div>
+      <div className="dialog-actions">
+        <button className="button button--orange" type="submit" disabled={busy}>
+          {busy ? "Sending…" : "Email me a code"} <Arrow />
+        </button>
+      </div>
+      {error && <p className="dialog-muted" role="alert">{error}</p>}
+      <p className="dialog-muted">Sign-in codes are delivered by email; your address is used for sign-in and recall alerts, nothing else.</p>
+    </form>
+  ) : (
+    <form onSubmit={verifyCode}>
+      <p>We sent an 8-digit code to <strong>{email}</strong>. Enter it below.</p>
+      <div className="search-row" style={{ marginTop: 14 }}>
+        <div className="search-box">
+          <label htmlFor="desk-code" className="sr-only">Sign-in code</label>
+          <input id="desk-code" name="code" inputMode="numeric" pattern="[0-9]*" required placeholder="12345678" autoComplete="one-time-code" />
+        </div>
+      </div>
+      <div className="dialog-actions">
+        <button className="button button--orange" type="submit" disabled={busy}>
+          {busy ? "Checking…" : "Sign in"} <Arrow />
+        </button>
+        <button
+          className="button button--outline"
+          type="button"
+          disabled={busy}
+          onClick={async () => {
+            setError("");
+            setNotice("");
+            setBusy(true);
+            try {
+              await signIn("recall-otp", { email });
+              setNotice("Code re-sent — check your inbox.");
+            } catch {
+              setError("Couldn't resend right now. Wait a moment and try again.");
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Resend code
+        </button>
+        <button className="button button--outline" type="button" onClick={() => { setStep("email"); setError(""); setNotice(""); }}>
+          Different email
+        </button>
+      </div>
+      {notice && <p className="dialog-muted" role="status">{notice}</p>}
+      {error && <p className="dialog-muted" role="alert">{error}</p>}
+    </form>
+  );
+}
+
+type IntakeTab = "photo" | "paste" | "manual";
+const INTAKE_TABS: ReadonlyArray<{ id: IntakeTab; label: string }> = [
+  { id: "photo", label: "Photo" },
+  { id: "paste", label: "Paste text" },
+  { id: "manual", label: "Type it in" },
+];
+const MAX_PHOTOS = 4;
+const EMPTY_MANUAL = { product: "", brand: "", model: "", purchaseDate: "", retailer: "" };
+
+/** The "add to your desk" card: photo upload, pasted text, or a typed-in item. */
+function IntakePanel({ ingestAddress, autoFocusPhoto }: { ingestAddress: string | null; autoFocusPhoto: boolean }) {
+  const ingestPasted = useAction(api.receipts.ingestPastedReceipt);
+  const ingestUploaded = useAction(api.receipts.ingestUploadedReceipt);
+  const uploadUrl = useMutation(api.receipts.generateReceiptUploadUrl);
+  const addManual = useMutation(api.items.addManualItem);
+  const [tab, setTab] = useState<IntakeTab>("photo");
+  const [busy, setBusy] = useState("");
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  const [paste, setPaste] = useState("");
+  const [manual, setManual] = useState(EMPTY_MANUAL);
+  const [copied, setCopied] = useState(false);
+  const tabRefs = useRef<Record<IntakeTab, HTMLButtonElement | null>>({ photo: null, paste: null, manual: null });
+  const fileRef = useRef<HTMLInputElement>(null);
+  const copyTimer = useRef<number | null>(null);
+
+  // "Add a receipt" on the home page lands here with the Photo tab focused.
+  useEffect(() => {
+    if (autoFocusPhoto) tabRefs.current.photo?.focus();
+  }, [autoFocusPhoto]);
+  useEffect(() => () => {
+    if (copyTimer.current !== null) clearTimeout(copyTimer.current);
+  }, []);
+
+  const working = busy !== "";
+  const selectTab = (next: IntakeTab) => {
+    setTab(next);
+    setMsg("");
+    setErr("");
+  };
+  const onTabKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    e.preventDefault();
+    const i = INTAKE_TABS.findIndex((t) => t.id === tab);
+    const next = INTAKE_TABS[(i + (e.key === "ArrowRight" ? 1 : INTAKE_TABS.length - 1)) % INTAKE_TABS.length];
+    selectTab(next.id);
+    tabRefs.current[next.id]?.focus();
+  };
+
+  const handleFiles = async (list: ArrayLike<File> | null) => {
+    const files = Array.from(list ?? []);
+    if (files.length === 0) return;
+    if (working) {
+      setErr("Still working on the last upload — one moment.");
+      return;
+    }
+    setErr("");
+    setMsg("");
+    if (files.length > MAX_PHOTOS) {
+      setErr("Choose up to 4 photos at a time.");
+      return;
+    }
+    try {
+      // Prepare everything first (HEIC → JPEG, downscale, strip metadata) so
+      // nothing the server would reject is ever uploaded.
+      const prepared: Blob[] = [];
+      for (const file of files) {
+        setBusy("Preparing photo…");
+        const image = await prepareReceiptImage(file, (stage) =>
+          setBusy(stage === "converting" ? "Converting iPhone photo…" : "Preparing photo…"),
+        );
+        prepared.push(image.blob);
+      }
+      const storageIds: Id<"_storage">[] = [];
+      for (const [i, blob] of prepared.entries()) {
+        setBusy(`Uploading photo ${i + 1} of ${prepared.length}…`);
+        const url = await uploadUrl({});
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": blob.type || "application/octet-stream" },
+          body: blob,
+        });
+        if (!res.ok) throw new Error("Upload failed — check your connection and try again.");
+        const { storageId } = (await res.json()) as { storageId: Id<"_storage"> };
+        storageIds.push(storageId);
+      }
+      setBusy("Reading your photos…");
+      const out = await ingestUploaded({ storageIds });
+      setMsg(
+        out.itemsCreated > 0
+          ? `Added ${plural(out.itemsCreated, "item")} from your photos.`
+          : "No products found in those photos — try a flatter, brighter shot.",
+      );
+    } catch (error) {
+      setErr(error instanceof ImagePrepError ? error.userMessage : userMessage(error, "Upload failed."));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const submitPaste = async () => {
+    setErr("");
+    setMsg("");
+    setBusy("Reading…");
+    try {
+      const out = await ingestPasted({ text: paste });
+      setMsg(
+        out.itemsCreated > 0
+          ? `Added ${plural(out.itemsCreated, "item")}.`
+          : "No purchased items found in that text.",
+      );
+      setPaste("");
+    } catch (error) {
+      setErr(userMessage(error, "Couldn't read that."));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const submitManual = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setErr("");
+    setMsg("");
+    const opt = (s: string) => (s.trim() === "" ? undefined : s.trim());
+    const product = manual.product.trim();
+    setBusy("Adding…");
+    try {
+      await addManual({
+        product,
+        brand: opt(manual.brand),
+        model: opt(manual.model),
+        purchaseDate: opt(manual.purchaseDate),
+        retailer: opt(manual.retailer),
+      });
+      setMsg(`Watching ${product}.`);
+      setManual(EMPTY_MANUAL);
+    } catch (error) {
+      setErr(userMessage(error, "Couldn't add that item."));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const copyAlias = async () => {
+    if (ingestAddress === null) return;
+    try {
+      await navigator.clipboard.writeText(ingestAddress);
+      setCopied(true);
+      if (copyTimer.current !== null) clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setErr("Couldn't copy — select the address and copy it by hand.");
+    }
+  };
+
+  const field = (key: keyof typeof EMPTY_MANUAL) => ({
+    value: manual[key],
+    onChange: (e: ChangeEvent<HTMLInputElement>) => setManual((m) => ({ ...m, [key]: e.target.value })),
+    disabled: working,
+  });
+
+  return (
+    <section className="desk-card" aria-labelledby="intake-label">
+      <span className="detail-label" id="intake-label">Add to your desk</span>
+      <div className="intake-tabs" role="tablist" aria-label="How to add an item" onKeyDown={onTabKey}>
+        {INTAKE_TABS.map((t) => (
+          <button
+            key={t.id}
+            ref={(el) => { tabRefs.current[t.id] = el; }}
+            className="intake-tab"
+            role="tab"
+            id={`intake-tab-${t.id}`}
+            aria-selected={tab === t.id}
+            aria-controls={`intake-panel-${t.id}`}
+            tabIndex={tab === t.id ? 0 : -1}
+            onClick={() => selectTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div role="tabpanel" id={`intake-panel-${tab}`} aria-labelledby={`intake-tab-${tab}`}>
+        {tab === "photo" && (
           <>
+            <p className="intake-hint">Snap the receipt, the prescription label, or the product itself — we read the products off it.</p>
+            <label
+              className="dropzone"
+              role="button"
+              tabIndex={working ? -1 : 0}
+              aria-busy={working}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  fileRef.current?.click();
+                }
+              }}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                void handleFiles(e.dataTransfer.files);
+              }}
+            >
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*,.heic,.heif"
+                multiple
+                hidden
+                disabled={working}
+                onChange={(e) => {
+                  // Copy the list before resetting the input (resetting clears it).
+                  const picked = e.target.files ? Array.from(e.target.files) : [];
+                  e.target.value = "";
+                  void handleFiles(picked);
+                }}
+              />
+              <strong>{working ? busy : "Take a photo or choose from your camera roll"}</strong>
+              <small>Up to 4 photos at a time. iPhone HEIC photos are fine.</small>
+            </label>
+            <ul className="intake-guide">
+              <li>Store receipts — flat, good light, the whole receipt in frame. Long receipt? Take 2–3 overlapping shots.</li>
+              <li>Pharmacy receipts and prescription labels — we keep the drug, strength, manufacturer and NDC; never your name, prescriber or plan.</li>
+              <li>Pill bottles, boxes and labels — front and back as separate photos.</li>
+              <li>Screenshots count — an Amazon Your Orders page works as a photo.</li>
+            </ul>
+          </>
+        )}
+        {tab === "paste" && (
+          <>
+            <p className="intake-hint">Copy the order confirmation email or the order page (select all → copy) and paste it here.</p>
             <textarea
+              className="intake-textarea"
               aria-label="Paste your receipt text"
               placeholder="Paste an order confirmation or receipt here…"
               value={paste}
               onChange={(e) => setPaste(e.target.value)}
-              rows={6}
+              rows={7}
               maxLength={15000}
-              style={{ width: "100%", marginTop: 10, font: "inherit", fontSize: 14, padding: 10, border: "1px solid var(--line)", borderRadius: 5, background: "var(--paper)", color: "inherit", resize: "vertical" }}
+              disabled={working}
             />
             <div className="dialog-actions">
               <button
                 className="button button--orange"
-                disabled={intakeBusy !== "" || paste.trim().length < 20}
-                onClick={async () => {
-                  setIntakeErr("");
-                  setIntakeMsg("");
-                  setIntakeBusy("Reading…");
-                  try {
-                    const out = await ingestPasted({ text: paste });
-                    setIntakeMsg(
-                      out.itemsCreated > 0
-                        ? `Added ${out.itemsCreated} item${out.itemsCreated === 1 ? "" : "s"}.`
-                        : "No purchased items found in that text.",
-                    );
-                    setPaste("");
-                    setShowPaste(false);
-                  } catch (error) {
-                    setIntakeErr(error instanceof Error ? error.message : "Couldn't read that.");
-                  } finally {
-                    setIntakeBusy("");
-                  }
-                }}
+                disabled={working || paste.trim().length < 20}
+                onClick={() => void submitPaste()}
               >
-                {intakeBusy !== "" ? "Reading…" : "Add these items"} <Arrow />
+                {working ? busy : "Add these items"} <Arrow />
               </button>
             </div>
           </>
         )}
-        {intakeMsg && <p className="dialog-muted" role="status">{intakeMsg}</p>}
-        {intakeErr && <p className="dialog-muted" role="alert">{intakeErr}</p>}
-        <p className="dialog-muted" style={{ marginTop: 8 }}>
-          Prefer email? Forward receipts to{" "}
-          {desk.ingestAddress ? (
-            <strong>{desk.ingestAddress}</strong>
-          ) : (
-            <em>your address (activating)</em>
-          )}{" "}
-          — anything you send there lands here automatically.
-        </p>
-      </div>
-      {matches !== undefined && matches.length > 0 && (
-        <div className="detail-block">
-          <span className="detail-label" style={{ color: "var(--orange)" }} aria-live="polite">
-            ⚠ Recall matches · {matches.length}
-          </span>
-          <ul className="sample-timeline">
-            {matches.map(({ match, item, recall }) => (
-              <li key={match._id}>
-                <span aria-hidden="true" style={{ color: "var(--orange)" }}>!</span>
-                <div>
-                  <strong>{item?.product ?? "(item removed)"}</strong>
-                  <small>
-                    {recall?.title ?? "(recall unavailable)"}
-                    {recall?.status === "closed" ? " · recall now closed" : ""}
-                    <br />
-                    {match.prefilterReasons && match.prefilterReasons.length > 0 && (
-                      <>Why: {match.prefilterReasons.join("; ")}<br /></>
-                    )}
-                    AI assessment ({Math.round(match.matchScore * 100)}%): {match.matchRationale}
-                    {" · "}
-                    {recall && (
-                      <a href={recall.url} target="_blank" rel="noopener noreferrer">
-                        official notice ↗
-                      </a>
-                    )}
-                    {recall?.remedyUrl && (
-                      <>
-                        {" · "}
-                        <button className="text-link" style={{ font: "inherit", padding: 0, border: 0, background: "none", cursor: "pointer" }} onClick={() => onOpenRemedy(match._id)}>
-                          remedy checklist →
-                        </button>
-                      </>
-                    )}
-                    {" · "}
-                    <button className="text-link" style={{ font: "inherit", padding: 0, border: 0, background: "none", cursor: "pointer" }} onClick={() => onOpenClaim(match._id)}>
-                      {match.state === "claim_sent" || match.state === "acknowledged"
-                        ? "claim timeline →"
-                        : recall?.remedyUrl
-                          ? "email a claim instead →"
-                          : "file the claim by email →"}
-                    </button>
-                    {!recall?.remedyUrl && recall?.consumerContact && !/[\w.+-]+@/.test(recall.consumerContact) && (
-                      <> · contact: {recall.consumerContact}</>
-                    )}
-                    {match.state === "notified" ? " · alerted by email" : ""}
-                  </small>
-                </div>
-                <button
-                  className="clear-search"
-                  aria-label={`Dismiss match for ${item?.product ?? "this item"}`}
-                  title="Dismiss"
-                  onClick={() => void dismissMatch({ matchId: match._id })}
-                >
-                  <svg className="icon" aria-hidden="true"><use href="#i-close" /></svg>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {claims !== undefined && claims.length > 0 && (
-        <div className="detail-block">
-          <span className="detail-label">Your claims · {claims.length}</span>
-          <ul className="sample-timeline">
-            {claims.map((row) => (
-              <li key={row.claim._id}>
-                <span aria-hidden="true">{CLAIM_ICON[row.claim.state] ?? "•"}</span>
-                <div>
-                  <strong>{row.product ?? "(item removed)"}</strong>
-                  <small>
-                    {CLAIM_STATE_LABEL[row.claim.state] ?? row.claim.state}
-                    {row.lastEventAt
-                      ? ` · ${new Date(row.lastEventAt).toLocaleDateString()}`
-                      : ""}
-                    {" · to "}
-                    {row.claim.recipient || "(no recipient)"}
-                    {" · "}
-                    <button
-                      className="text-link"
-                      style={{ font: "inherit", padding: 0, border: 0, background: "none", cursor: "pointer" }}
-                      onClick={() => onOpenClaim(row.matchId)}
-                    >
-                      open →
-                    </button>
-                  </small>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      <div className="detail-block">
-        <span className="detail-label">Watched items{desk.itemsCount > 100 ? " · 100+" : desk.itemsCount > 0 ? ` · ${desk.itemsCount}` : ""}</span>
-        {items === undefined || items.length === 0 ? (
-          <p>
-            None yet — forward a retailer receipt to your address above and
-            the items appear here within a minute.
-          </p>
-        ) : (
-          <>
-            <ul className="sample-timeline">
-              {items.slice(0, 12).map((item) => (
-                <li key={item._id}>
-                  <span aria-hidden="true">▤</span>
-                  <div>
-                    <strong>{item.product}</strong>
-                    <small>
-                      {[item.brand, item.retailer, item.purchaseDate]
-                        .filter(Boolean)
-                        .join(" · ") || "no further details in the receipt"}
-                      {item.confidence < 0.8
-                        ? ` · extraction confidence ${Math.round(item.confidence * 100)}%`
-                        : ""}
-                    </small>
-                  </div>
-                  <button
-                    className="clear-search"
-                    aria-label={`Stop watching ${item.product}`}
-                    title="Stop watching"
-                    onClick={() => void dismissItem({ itemId: item._id })}
-                  >
-                    <svg className="icon" aria-hidden="true"><use href="#i-close" /></svg>
-                  </button>
-                </li>
-              ))}
-            </ul>
-            {items.length > 12 && (
-              <p className="dialog-muted">+{items.length - 12} more items on your desk.</p>
-            )}
-          </>
+        {tab === "manual" && (
+          <form onSubmit={submitManual}>
+            <p className="intake-hint">No receipt? Tell us what you have.</p>
+            <div className="field">
+              <label htmlFor="manual-product">Product</label>
+              <input id="manual-product" required minLength={2} maxLength={200} placeholder="e.g. Stanley 16 oz rubber mallet" autoComplete="off" {...field("product")} />
+            </div>
+            <div className="field">
+              <label htmlFor="manual-brand">Brand (optional)</label>
+              <input id="manual-brand" maxLength={120} placeholder="e.g. Stanley" autoComplete="off" {...field("brand")} />
+            </div>
+            <div className="field">
+              <label htmlFor="manual-model">Model or code (optional)</label>
+              <input id="manual-model" maxLength={120} placeholder="e.g. 57-527" autoComplete="off" {...field("model")} />
+              <small>from the box or label — sharpens matching a lot</small>
+            </div>
+            <div className="field">
+              <label htmlFor="manual-date">Bought around (optional)</label>
+              <input id="manual-date" type="month" placeholder="YYYY-MM" pattern="\d{4}-\d{2}(-\d{2})?" {...field("purchaseDate")} />
+            </div>
+            <div className="field">
+              <label htmlFor="manual-store">Store (optional)</label>
+              <input id="manual-store" maxLength={120} placeholder="e.g. Home Depot" autoComplete="off" {...field("retailer")} />
+            </div>
+            <p className="dialog-muted">Less precise than a receipt: we match on the words you give us, so include the brand and any model number you can find.</p>
+            <div className="dialog-actions">
+              <button className="button button--orange" type="submit" disabled={working}>
+                {working ? busy : "Watch this item"} <Arrow />
+              </button>
+            </div>
+          </form>
         )}
       </div>
-      <div className="dialog-actions">
-        <button className="button button--orange" onClick={onSampleClaim}>See a sample claim <Arrow /></button>
-        <button className="button button--outline" onClick={() => { setStep("email"); setError(""); setNotice(""); void signOut(); }}>Sign out</button>
+      {msg && <p className="intake-status" role="status">{msg}</p>}
+      {err && <p className="intake-status intake-status--error" role="alert">{err}</p>}
+      <p className="intake-email">
+        Prefer email? Forward receipts to{" "}
+        {ingestAddress ? (
+          <>
+            <strong>{ingestAddress}</strong>
+            <button type="button" className="copy-button" onClick={() => void copyAlias()}>
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </>
+        ) : (
+          <em>your address (activating)</em>
+        )}
+        {" "}— anything you send there lands here automatically.
+      </p>
+    </section>
+  );
+}
+
+function DeskSignedIn({ desk, autoFocusPhoto, onOpenRemedy, onOpenClaim, onSampleClaim, onSignOut }: {
+  desk: DeskInfo;
+  autoFocusPhoto: boolean;
+  onOpenRemedy: (matchId: Id<"matches">) => void;
+  onOpenClaim: (matchId: Id<"matches">) => void;
+  onSampleClaim: () => void;
+  onSignOut: () => void;
+}) {
+  const items = useQuery(api.items.myItems);
+  const dismissItem = useMutation(api.items.dismissItem);
+  const matches = useQuery(api.match.myMatches);
+  const dismissMatch = useMutation(api.match.dismissMatch);
+  const claims = useQuery(api.claims.myClaims);
+  const matchCount = matches?.length ?? desk.matchesCount;
+  const itemCount = desk.itemsCount > 100 ? "100+" : String(items?.length ?? desk.itemsCount);
+
+  return (
+    <>
+      <div className="desk-head">
+        <p className="eyebrow"><span className="orange-square" aria-hidden="true" />My desk</p>
+        <h1>One place.<br />One less thing.</h1>
+        <p className="desk-identity">
+          <span>Signed in as <strong>{desk.email ?? "your account"}</strong></span>
+          <button className="text-link" onClick={onSignOut}>Sign out</button>
+        </p>
       </div>
-      <p className="dialog-muted">Your items are matched against every new recall automatically — you'll be emailed the day something you own is recalled.</p>
+      <div className="desk-grid">
+        <IntakePanel ingestAddress={desk.ingestAddress} autoFocusPhoto={autoFocusPhoto} />
+        <div className="desk-main">
+          <section className="desk-section" aria-labelledby="matches-label">
+            <span className="detail-label" id="matches-label" style={{ color: "var(--orange)" }} aria-live="polite">
+              Recall matches · {matchCount}
+            </span>
+            {matches === undefined ? (
+              <p className="dialog-muted">Checking your desk…</p>
+            ) : matches.length === 0 ? (
+              <p className="desk-empty">
+                No recalls match your items yet. Every new recall is checked
+                against your desk automatically — you'll get an email the day
+                one matches.{" "}
+                <button className="text-link" onClick={onSampleClaim}>See a sample claim</button>
+              </p>
+            ) : (
+              <ul className="sample-timeline">
+                {matches.map(({ match, item, recall }) => (
+                  <li key={match._id}>
+                    <span aria-hidden="true" style={{ color: "var(--orange)" }}>!</span>
+                    <div>
+                      <strong>{item?.product ?? "(item removed)"}</strong>
+                      <small>
+                        {recall?.title ?? "(recall unavailable)"}
+                        {recall?.status === "closed" ? " · recall now closed" : ""}
+                        <br />
+                        {match.prefilterReasons && match.prefilterReasons.length > 0 && (
+                          <>Why: {match.prefilterReasons.join("; ")}<br /></>
+                        )}
+                        {match.matchScore < 0.7
+                          ? `Possible match (${Math.round(match.matchScore * 100)}%) — confirm before acting: `
+                          : `AI assessment (${Math.round(match.matchScore * 100)}%): `}
+                        {match.matchRationale}
+                        {" · "}
+                        {recall && (
+                          <a href={recall.url} target="_blank" rel="noopener noreferrer">
+                            official notice ↗
+                          </a>
+                        )}
+                        {recall?.remedyUrl && (
+                          <>
+                            {" · "}
+                            <button className="text-link" style={{ font: "inherit", padding: 0, border: 0, background: "none", cursor: "pointer" }} onClick={() => onOpenRemedy(match._id)}>
+                              remedy checklist →
+                            </button>
+                          </>
+                        )}
+                        {" · "}
+                        <button className="text-link" style={{ font: "inherit", padding: 0, border: 0, background: "none", cursor: "pointer" }} onClick={() => onOpenClaim(match._id)}>
+                          {match.state === "claim_sent" || match.state === "acknowledged"
+                            ? "claim timeline →"
+                            : recall?.remedyUrl
+                              ? "email a claim instead →"
+                              : "file the claim by email →"}
+                        </button>
+                        {!recall?.remedyUrl && recall?.consumerContact && !/[\w.+-]+@/.test(recall.consumerContact) && (
+                          <> · contact: {recall.consumerContact}</>
+                        )}
+                        {match.state === "notified" ? " · alerted by email" : ""}
+                      </small>
+                    </div>
+                    <button
+                      className="clear-search"
+                      aria-label={`Dismiss match for ${item?.product ?? "this item"}`}
+                      title="Dismiss"
+                      onClick={() => void dismissMatch({ matchId: match._id })}
+                    >
+                      <svg className="icon" aria-hidden="true"><use href="#i-close" /></svg>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+          {claims !== undefined && claims.length > 0 && (
+            <section className="desk-section" aria-labelledby="claims-label">
+              <span className="detail-label" id="claims-label">Your claims · {claims.length}</span>
+              <ul className="sample-timeline">
+                {claims.map((row) => (
+                  <li key={row.claim._id}>
+                    <span aria-hidden="true">{CLAIM_ICON[row.claim.state] ?? "•"}</span>
+                    <div>
+                      <strong>{row.product ?? "(item removed)"}</strong>
+                      <small>
+                        {CLAIM_STATE_LABEL[row.claim.state] ?? row.claim.state}
+                        {row.lastEventAt
+                          ? ` · ${new Date(row.lastEventAt).toLocaleDateString()}`
+                          : ""}
+                        {" · to "}
+                        {row.claim.recipient || "(no recipient)"}
+                        {" · "}
+                        <button
+                          className="text-link"
+                          style={{ font: "inherit", padding: 0, border: 0, background: "none", cursor: "pointer" }}
+                          onClick={() => onOpenClaim(row.matchId)}
+                        >
+                          open →
+                        </button>
+                      </small>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+          <section className="desk-section" aria-labelledby="items-label">
+            <span className="detail-label" id="items-label">Watched items · {itemCount}</span>
+            {items === undefined ? (
+              <p className="dialog-muted">Loading…</p>
+            ) : items.length === 0 ? (
+              <p className="desk-empty">Nothing watched yet — add a receipt on the left.</p>
+            ) : (
+              <>
+                <ul className="sample-timeline">
+                  {items.slice(0, 12).map((item) => (
+                    <li key={item._id}>
+                      <span aria-hidden="true">▤</span>
+                      <div>
+                        <strong>
+                          {item.product}
+                          <span className="entry-badge">{entryLabel(item.sourceMessageId)}</span>
+                        </strong>
+                        <small>
+                          {[
+                            item.brand,
+                            item.retailer,
+                            item.purchaseDate,
+                            item.ndc ? `NDC ${item.ndc}` : "",
+                            item.lot ? `lot ${item.lot}` : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ") || "no further details in the receipt"}
+                          {item.sourceMessageId.startsWith("manual:")
+                            ? " · matched on your words — add a model number to sharpen it"
+                            : item.confidence < 0.8
+                              ? ` · extraction confidence ${Math.round(item.confidence * 100)}%`
+                              : ""}
+                        </small>
+                      </div>
+                      <button
+                        className="clear-search"
+                        aria-label={`Stop watching ${item.product}`}
+                        title="Stop watching"
+                        onClick={() => void dismissItem({ itemId: item._id })}
+                      >
+                        <svg className="icon" aria-hidden="true"><use href="#i-close" /></svg>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                {items.length > 12 && (
+                  <p className="dialog-muted">+{items.length - 12} more items on your desk.</p>
+                )}
+              </>
+            )}
+          </section>
+          <p className="dialog-muted">Your items are matched against every new recall automatically — you'll be emailed the day something you own is recalled.</p>
+        </div>
+      </div>
     </>
+  );
+}
+
+/** The full-page desk: loading → sign-in → the desk itself. */
+function DeskPage({ desk, autoFocusPhoto, onOpenRemedy, onOpenClaim, onSampleClaim, onSignOut }: {
+  desk: DeskInfo | null | undefined;
+  autoFocusPhoto: boolean;
+  onOpenRemedy: (matchId: Id<"matches">) => void;
+  onOpenClaim: (matchId: Id<"matches">) => void;
+  onSampleClaim: () => void;
+  onSignOut: () => void;
+}) {
+  if (desk === undefined) {
+    return <p className="dialog-muted">Loading your desk…</p>;
+  }
+  if (desk === null) {
+    return (
+      <>
+        <div className="desk-head">
+          <p className="eyebrow"><span className="orange-square" aria-hidden="true" />My desk</p>
+          <h1>Your desk.<br />One sign-in away.</h1>
+        </div>
+        <div className="desk-signin">
+          <SignInForms />
+          <ol className="sample-timeline">
+            <li><span>01</span><div><strong>Add what you own</strong><small>A photo, pasted text, a forwarded receipt — or just type it in.</small></div></li>
+            <li><span>02</span><div><strong>We watch every recall</strong><small>CPSC, FDA and USDA-FSIS, checked against your desk around the clock.</small></div></li>
+            <li><span>03</span><div><strong>Approve the prepared claim</strong><small>We draft it from the official notice. Nothing sends without you.</small></div></li>
+          </ol>
+        </div>
+      </>
+    );
+  }
+  return (
+    <DeskSignedIn
+      desk={desk}
+      autoFocusPhoto={autoFocusPhoto}
+      onOpenRemedy={onOpenRemedy}
+      onOpenClaim={onOpenClaim}
+      onSampleClaim={onSampleClaim}
+      onSignOut={onSignOut}
+    />
   );
 }
 
@@ -813,7 +1119,7 @@ function ClaimScreen({ matchId }: { matchId: Id<"matches"> }) {
 }
 
 type Screen =
-  | { kind: "welcome" } | { kind: "desk" } | { kind: "claim" } | { kind: "approve" }
+  | { kind: "welcome" } | { kind: "claim" } | { kind: "approve" }
   | { kind: "about" } | { kind: "privacy" } | { kind: "sources" }
   | { kind: "recall"; recall: Recall }
   | { kind: "remedy"; matchId: Id<"matches"> }
@@ -912,13 +1218,24 @@ function RecallDetail({ recall, onWelcome }: { recall: Recall; onWelcome: () => 
   );
 }
 
-function RemedyScreenWrapper({ matchId }: { matchId: Id<"matches"> }) {
-  const desk = useQuery(api.users.myDesk);
-  return <RemedyScreen matchId={matchId} userEmail={desk?.email ?? null} />;
+function SiteFooter({ open }: { open: (kind: "about" | "privacy" | "sources") => () => void }) {
+  return (
+    <footer className="site-footer">
+      <Brand />
+      <div className="footer-links">
+        <button onClick={open("about")}>About</button>
+        <button onClick={open("privacy")}>Privacy</button>
+        <button onClick={open("sources")}>Official sources</button>
+        <a href={REPO} target="_blank" rel="noopener noreferrer">GitHub</a>
+      </div>
+    </footer>
+  );
 }
 
 export default function App() {
   const stats = useQuery(api.recalls.stats);
+  const desk = useQuery(api.users.myDesk);
+  const { signOut } = useAuthActions();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 30_000);
@@ -947,6 +1264,41 @@ export default function App() {
   const [motionPaused, setMotionPaused] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
 
+  // Hash routing: "#desk" is the desk page; every other fragment is the home board.
+  const [route, setRoute] = useState<Route>(routeFromHash);
+  // A signed-in visitor must not see the marketing hero flash before myDesk
+  // resolves; remember the last known state per browser (per-viewer
+  // convenience only — the query is the source of truth).
+  const [assumeSignedIn] = useState<boolean>(() => {
+    try { return localStorage.getItem("rd:signedIn") === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    if (desk === undefined) return;
+    try {
+      if (desk !== null) localStorage.setItem("rd:signedIn", "1");
+      else localStorage.removeItem("rd:signedIn");
+    } catch { /* storage unavailable: fall back to the query alone */ }
+  }, [desk]);
+  const [focusIntake, setFocusIntake] = useState(false);
+  const mainRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const onHash = () => {
+      setRoute(routeFromHash());
+      setScreen(null); // Back/Forward must not leave a dialog floating over the other route
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  useEffect(() => {
+    // Coming back from the desk with a section fragment: the section did not
+    // exist when the hash changed, so the browser could not scroll to it.
+    if (route !== "home") return;
+    const id = location.hash.slice(1);
+    if (id === "recalls" || id === "how-it-works") {
+      document.getElementById(id)?.scrollIntoView();
+    }
+  }, [route]);
+
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
@@ -960,6 +1312,34 @@ export default function App() {
   const open = (kind: Screen["kind"]) => () => setScreen({ kind } as Screen);
   const close = () => setScreen(null);
 
+  const goDesk = (focusPhoto = false) => {
+    setFocusIntake(focusPhoto);
+    setNavOpen(false);
+    if (location.hash !== "#desk") navigateHash("#desk");
+    window.scrollTo({ top: 0 });
+  };
+  const goHome = (anchor?: string) => {
+    const target = anchor ?? "#top";
+    setNavOpen(false);
+    if (location.hash === target) {
+      // Same fragment twice fires no hashchange, so scroll ourselves.
+      document.getElementById(target.slice(1))?.scrollIntoView();
+      return;
+    }
+    navigateHash(target);
+  };
+  /** Dialog buttons that lead to the desk: close the dialog, then route. */
+  const openDesk = (focusPhoto = false) => () => {
+    close();
+    goDesk(focusPhoto);
+  };
+  const signOutToHome = async () => {
+    goHome();
+    await signOut();
+  };
+  const signedIn = desk !== undefined && desk !== null;
+  const email = desk?.email ?? "your account";
+
   const noticeKind = (r: Recall) =>
     r.source === "fsis" && /^Public health alert/i.test(r.hazard)
       ? "public health alert"
@@ -969,8 +1349,7 @@ export default function App() {
       ? `Official ${SOURCE_LABEL[screen.recall.source]} ${noticeKind(screen.recall)} · ${fmtDate(screen.recall.publishedAt)}${screen.recall.status === "closed" ? " · CLOSED" : screen.recall.status === "expanded" ? " · EXPANDED" : ""}`
       : screen?.kind === "remedy" ? "Remedy checklist"
       : screen?.kind === "claimReal" ? "Your claim · approval required"
-      : screen?.kind === "welcome" ? "The personal desk · Preview"
-      : screen?.kind === "desk" ? "My desk"
+      : screen?.kind === "welcome" ? "The personal desk"
       : screen?.kind === "claim" ? "Your approval comes first · Sample preview"
       : screen?.kind === "approve" ? "Sample workflow"
       : screen?.kind === "about" ? "About Recall Desk"
@@ -981,7 +1360,7 @@ export default function App() {
   if (screen?.kind === "recall") {
     dialogBody = <RecallDetail recall={screen.recall} onWelcome={open("welcome")} />;
   } else if (screen?.kind === "remedy") {
-    dialogBody = <RemedyScreenWrapper matchId={screen.matchId} />;
+    dialogBody = <RemedyScreen matchId={screen.matchId} userEmail={desk?.email ?? null} />;
   } else if (screen?.kind === "claimReal") {
     dialogBody = <ClaimScreen matchId={screen.matchId} />;
   } else if (screen?.kind === "welcome") {
@@ -990,24 +1369,16 @@ export default function App() {
         <h2 id="dialog-title">A little less<br />on your list.</h2>
         <p>Keep track of the things you buy, get an alert when a recall matches, and review a prepared claim in one place.</p>
         <ol className="sample-timeline">
-          <li><span>01</span><div><strong>Forward your retailer receipts</strong><small>Your purchases become the items on your desk.</small></div></li>
+          <li><span>01</span><div><strong>Add what you own</strong><small>A photo, pasted text or a forwarded receipt becomes the items on your desk.</small></div></li>
           <li><span>02</span><div><strong>We watch for a match</strong><small>A relevant recall becomes an actionable alert.</small></div></li>
           <li><span>03</span><div><strong>Review and approve your claim</strong><small>You stay in control of what gets sent.</small></div></li>
         </ol>
         <div className="dialog-actions">
-          <button className="button button--orange" onClick={open("desk")}>Create my desk <Arrow /></button>
+          <button className="button button--orange" onClick={openDesk()}>{signedIn ? "Open my desk" : "Create my desk"} <Arrow /></button>
           <button className="button button--outline" onClick={open("claim")}>Explore a sample claim</button>
         </div>
-        <p className="dialog-muted">Desks are open today (email sign-in, no password). Receipt ingestion is being connected — your forwarding address appears on your desk the moment it's live.</p>
+        <p className="dialog-muted">Desks are open — email sign-in, no password. Add what you own by photo, pasted text, or by forwarding receipts.</p>
       </>
-    );
-  } else if (screen?.kind === "desk") {
-    dialogBody = (
-      <DeskScreen
-        onSampleClaim={open("claim")}
-        onOpenRemedy={(matchId) => setScreen({ kind: "remedy", matchId })}
-        onOpenClaim={(matchId) => setScreen({ kind: "claimReal", matchId })}
-      />
     );
   } else if (screen?.kind === "claim") {
     const remedyWord = sample?.remedyOptions[0]?.toLowerCase() ?? "remedy";
@@ -1032,10 +1403,10 @@ export default function App() {
           <p>I am requesting assistance with this recall. Please confirm the next steps for verifying my unit and receiving the {remedyWord}.</p>
           <p>I can provide purchase and product-label photos for review.</p>
         </div>
-        <p className="dialog-muted">In the finished product, you confirm the matching model and provide the evidence the manufacturer requires before approving your claim.</p>
+        <p className="dialog-muted">On your own desk, you confirm the matching model and provide the evidence the manufacturer requires before approving your claim.</p>
         <div className="dialog-actions">
           <button className="button button--orange" onClick={open("approve")}>Preview approval <Arrow /></button>
-          <button className="button button--outline" onClick={open("desk")}>Open my desk</button>
+          <button className="button button--outline" onClick={openDesk()}>Open my desk</button>
         </div>
       </>
     );
@@ -1045,7 +1416,7 @@ export default function App() {
         <svg className="approved-icon" aria-hidden="true"><use href="#i-check" /></svg>
         <h2 id="dialog-title">You're in control.</h2>
         <p>Approval previewed. No claim was sent.</p>
-        <p className="dialog-muted">Once receipts are flowing, an approved claim and the manufacturer's replies will appear on your claim timeline.</p>
+        <p className="dialog-muted">On your desk, an approved claim and the manufacturer's replies appear on your claim timeline.</p>
         <div className="dialog-actions" style={{ justifyContent: "center" }}>
           <button className="button button--orange" onClick={close}>Back to recalls <Arrow /></button>
         </div>
@@ -1055,8 +1426,8 @@ export default function App() {
     dialogBody = (
       <>
         <h2 id="dialog-title">You bought it.<br />We watch it.</h2>
-        <p>Recall Desk watches the U.S. federal recall feeds around the clock and — soon — matches them against the retailer receipts you forward, preparing the claim for your approval.</p>
-        <p>Built solo for the Convex All Gas Hackathon on Convex and Firecrawl today, with AgentMail and OpenAI powering the receipt-matching lane that's next. Every recall shown is a real official notice; nothing is invented.</p>
+        <p>Recall Desk watches the U.S. federal recall feeds around the clock and matches them against what you own — receipts by photo, pasted text or forwarded email — then prepares the claim for your approval.</p>
+        <p>Built solo for the Convex All Gas Hackathon on Convex and Firecrawl, with AgentMail and OpenAI powering the receipt lane: photo, paste or email in; recall matches, remedy checklists and claims out. Every recall shown is a real official notice; nothing is invented.</p>
         <div className="dialog-actions">
           <a className="button button--outline" href={REPO} target="_blank" rel="noopener noreferrer">Source on GitHub <Arrow /></a>
           <a className="button button--outline" href={`${REPO}/blob/main/hackathon.md`} target="_blank" rel="noopener noreferrer">Build log</a>
@@ -1067,7 +1438,7 @@ export default function App() {
     dialogBody = (
       <>
         <h2 id="dialog-title">Your receipts<br />stay yours.</h2>
-        <p>Today the public board requires no account and collects nothing. When receipt monitoring opens, forwarded receipts are used only to match your purchases against official recalls and to prepare claims you explicitly approve. No data is sold, ever.</p>
+        <p>The public board requires no account and collects nothing. Receipts you upload, paste or forward are used only to match your purchases against official recalls and to prepare claims you explicitly approve. Photos are deleted as soon as they're read. Medication receipts keep only the drug, strength, manufacturer and NDC — never patient or prescriber details. No data is sold, ever.</p>
         <div className="dialog-actions"><button className="button button--outline" onClick={close}>Close</button></div>
       </>
     );
@@ -1083,131 +1454,237 @@ export default function App() {
     );
   }
 
+  const heroArt = (slip: ReactNode) => (
+    <div className="hero-art">
+      <img src={heroCollage} width={1254} height={1254} alt="A sculptural paper receipt arches over an espresso machine, sage speaker, and travel mug." fetchPriority="high" decoding="async" />
+      <div className="scan-zone" aria-hidden="true"><span className="scan-bracket scan-bracket--top" /><span className="scan-bracket scan-bracket--bottom" /><span className="scan-line" /></div>
+      {slip}
+    </div>
+  );
+  const motionToggle = (
+    <button className="motion-toggle" aria-pressed={motionPaused} onClick={() => setMotionPaused((v) => !v)}>
+      <svg aria-hidden="true"><use href="#i-pause" /></svg><span>{motionPaused ? "Play motion" : "Pause motion"}</span>
+    </button>
+  );
+
   return (
     <>
-      <a className="skip-link" href="#recalls">Skip to recalls</a>
+      {route === "desk" ? (
+        <a
+          className="skip-link"
+          href="#desk"
+          onClick={(e) => {
+            // A fragment link would re-route; focus the desk directly instead.
+            e.preventDefault();
+            mainRef.current?.focus();
+          }}
+        >
+          Skip to your desk
+        </a>
+      ) : (
+        <a className="skip-link" href="#recalls">Skip to recalls</a>
+      )}
       <IconDefs />
       <div className="wrap">
         <header className="site-header">
           <Brand />
           <nav className={`main-nav${navOpen ? " is-open" : ""}`} id="main-nav" aria-label="Main navigation">
-            <a className="nav-link" href="#recalls" onClick={() => setNavOpen(false)}>Latest recalls</a>
-            <a className="nav-link" href="#how-it-works" onClick={() => setNavOpen(false)}>How it works</a>
-            <button className="nav-link" onClick={open("desk")}>My desk</button>
+            <a className="nav-link" href="#recalls" onClick={(e) => { e.preventDefault(); goHome("#recalls"); }}>Latest recalls</a>
+            <a className="nav-link" href="#how-it-works" onClick={(e) => { e.preventDefault(); goHome("#how-it-works"); }}>How it works</a>
+            <button
+              className={`nav-link${route === "desk" ? " nav-link--current" : ""}`}
+              aria-current={route === "desk" ? "page" : undefined}
+              onClick={() => goDesk()}
+            >
+              My desk
+            </button>
           </nav>
           <div className="header-actions">
-            <button className="button" onClick={open("welcome")}>Get started <Arrow /></button>
+            {desk === undefined ? null : desk === null ? (
+              <button className="button" onClick={open("welcome")}>Get started <Arrow /></button>
+            ) : (
+              <>
+                <span className="signed-pill">
+                  <span className="status-dot" aria-hidden="true" />
+                  Signed in<span className="signed-email"> · {email}</span>
+                </span>
+                {route === "desk" ? (
+                  <button className="button button--outline" onClick={() => goHome("#recalls")}>Latest recalls <Arrow /></button>
+                ) : (
+                  <button className="button button--orange" onClick={() => goDesk()}>My desk <Arrow /></button>
+                )}
+              </>
+            )}
             <button className="menu-toggle" aria-expanded={navOpen} aria-controls="main-nav" aria-label="Open navigation" onClick={() => setNavOpen((v) => !v)}>
               <svg className="icon" aria-hidden="true"><use href="#i-menu" /></svg>
             </button>
           </div>
         </header>
 
-        <main id="top">
-          <section className="hero" aria-labelledby="hero-heading">
-            <div className="hero-copy">
-              <p className="eyebrow"><span className="orange-square" aria-hidden="true" />A little less to worry about</p>
-              <h1 id="hero-heading"><span>You bought it.</span><span>We watch it.</span></h1>
-              <p className="hero-description">Recall alerts for the things you own. Forward your receipts. We watch for recalls and prepare your claim for approval.</p>
-              <div className="hero-ctas">
-                <button className="button button--orange" onClick={open("welcome")}>Watch my purchases <Arrow /></button>
-                <a className="text-link" href="#recalls">Browse recalls <svg className="arrow" aria-hidden="true"><use href="#i-down" /></svg></a>
-              </div>
-              <p className="hero-note">Your receipts in. One less thing on your mind.</p>
+        {route === "desk" ? (
+          <main id="top" className="desk-page" ref={mainRef} tabIndex={-1}>
+            <DeskPage
+              desk={desk}
+              autoFocusPhoto={focusIntake}
+              onOpenRemedy={(matchId) => setScreen({ kind: "remedy", matchId })}
+              onOpenClaim={(matchId) => setScreen({ kind: "claimReal", matchId })}
+              onSampleClaim={open("claim")}
+              onSignOut={() => void signOutToHome()}
+            />
+          </main>
+        ) : (
+          <main id="top">
+            {desk || (desk === undefined && assumeSignedIn) ? (
+              <section className="hero hero--desk" aria-labelledby="hero-heading">
+                <div className="hero-copy">
+                  <p className="eyebrow"><span className="status-dot" aria-hidden="true" />{desk ? <>Signed in as <span className="eyebrow-email">{email}</span></> : "Signed in"}</p>
+                  <h1 id="hero-heading"><span>Your desk</span><span>is watching.</span></h1>
+                  <div className="desk-stats">
+                    <div className="stat"><span className="stat-number">{desk ? (desk.itemsCount > 100 ? "100+" : desk.itemsCount) : "…"}</span><span className="stat-label">items watched</span></div>
+                    <div className="stat"><span className="stat-number">{desk ? desk.matchesCount : "…"}</span><span className="stat-label">recall matches</span></div>
+                    <div className="stat"><span className="stat-number">{desk ? desk.claimsCount : "…"}</span><span className="stat-label">claims</span></div>
+                  </div>
+                  <div className="hero-ctas">
+                    <button className="button button--orange" onClick={() => goDesk()}>Open my desk <Arrow /></button>
+                    <button className="button button--outline" onClick={() => goDesk(true)}>Add a receipt</button>
+                    <button className="text-link" onClick={() => void signOut()}>Sign out</button>
+                  </div>
+                  <p className="hero-note">Every new recall is checked against your desk automatically.</p>
+                </div>
+                {heroArt(
+                  !desk ? null : desk.matchesCount > 0 ? (
+                    <button className="match-slip" onClick={() => goDesk()} aria-label={`${desk.matchesCount} recall ${desk.matchesCount === 1 ? "match" : "matches"} on your desk — open my desk`}>
+                      <small>YOUR DESK</small>
+                      <span className="match-content">
+                        <svg className="match-alert" aria-hidden="true"><use href="#i-alert" /></svg>
+                        <span style={{ flex: 1, minWidth: 0 }}>
+                          <span className="match-title">{desk.matchesCount} recall match{desk.matchesCount === 1 ? "" : "es"}.</span>
+                          <span className="match-bottom"><span>Review what to do.</span><span className="match-action">Open my desk <svg aria-hidden="true"><use href="#i-ne" /></svg></span></span>
+                        </span>
+                      </span>
+                    </button>
+                  ) : (
+                    <button className="match-slip" onClick={() => goDesk(true)} aria-label="No recalls match your items — add a receipt">
+                      <small>YOUR DESK</small>
+                      <span className="match-content">
+                        <svg className="match-alert match-alert--calm" aria-hidden="true"><use href="#i-check" /></svg>
+                        <span style={{ flex: 1, minWidth: 0 }}>
+                          <span className="match-title">No recalls match your items.</span>
+                          <span className="match-bottom"><span>Checked against every new recall automatically.</span><span className="match-action">Add a receipt <svg aria-hidden="true"><use href="#i-ne" /></svg></span></span>
+                        </span>
+                      </span>
+                    </button>
+                  ),
+                )}
+                {motionToggle}
+              </section>
+            ) : (
+              <section className="hero" aria-labelledby="hero-heading">
+                <div className="hero-copy">
+                  <p className="eyebrow"><span className="orange-square" aria-hidden="true" />A little less to worry about</p>
+                  <h1 id="hero-heading"><span>You bought it.</span><span>We watch it.</span></h1>
+                  <p className="hero-description">Recall alerts for the things you own. Add a receipt — photo, paste or email. We watch for recalls and prepare your claim for approval.</p>
+                  <div className="hero-ctas">
+                    <button className="button button--orange" onClick={open("welcome")}>Watch my purchases <Arrow /></button>
+                    <a className="text-link" href="#recalls">Browse recalls <svg className="arrow" aria-hidden="true"><use href="#i-down" /></svg></a>
+                  </div>
+                  <p className="hero-note">Your receipts in. One less thing on your mind.</p>
+                </div>
+                {heroArt(
+                  <button className="match-slip" onClick={open("claim")} aria-label="Review an illustrative recall claim">
+                    <small>ILLUSTRATIVE PREVIEW</small>
+                    <span className="match-content">
+                      <svg className="match-alert" aria-hidden="true"><use href="#i-alert" /></svg>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span className="match-title">Recall matched.</span>
+                        <span className="match-bottom"><span>Your claim is ready for review.</span><span className="match-action">Review claim <svg aria-hidden="true"><use href="#i-ne" /></svg></span></span>
+                      </span>
+                    </span>
+                  </button>,
+                )}
+                {motionToggle}
+              </section>
+            )}
+
+            <div className="board-status">
+              <span className="eyebrow"><span className="status-dot" aria-hidden="true" />Public recall board</span>
+              <span className="source-status">CPSC · FDA · FSIS live</span>
+              <span>No account needed</span>
             </div>
-            <div className="hero-art">
-              <img src={heroCollage} width={1254} height={1254} alt="A sculptural paper receipt arches over an espresso machine, sage speaker, and travel mug." fetchPriority="high" decoding="async" />
-              <div className="scan-zone" aria-hidden="true"><span className="scan-bracket scan-bracket--top" /><span className="scan-bracket scan-bracket--bottom" /><span className="scan-line" /></div>
-              <button className="match-slip" onClick={open("claim")} aria-label="Review an illustrative recall claim">
-                <small>ILLUSTRATIVE PREVIEW</small>
-                <span className="match-content">
-                  <svg className="match-alert" aria-hidden="true"><use href="#i-alert" /></svg>
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <span className="match-title">Recall matched.</span>
-                    <span className="match-bottom"><span>Your claim is ready for review.</span><span className="match-action">Review claim <svg aria-hidden="true"><use href="#i-ne" /></svg></span></span>
-                  </span>
+
+            <section className="board-section" id="recalls" aria-labelledby="recalls-heading">
+              <div className="section-heading">
+                <h2 id="recalls-heading">The latest. Worth a look.</h2>
+                <span className="text-link" aria-live="polite">
+                  {stats ? `${stats.recallsTracked.toLocaleString()} tracked · updated ${stats.lastCrawlAt ? timeAgo(stats.lastCrawlAt, now) : "—"}` : "…"}
                 </span>
-              </button>
-            </div>
-            <button className="motion-toggle" aria-pressed={motionPaused} onClick={() => setMotionPaused((v) => !v)}>
-              <svg aria-hidden="true"><use href="#i-pause" /></svg><span>{motionPaused ? "Play motion" : "Pause motion"}</span>
-            </button>
-          </section>
-
-          <div className="board-status">
-            <span className="eyebrow"><span className="status-dot" aria-hidden="true" />Public recall board</span>
-            <span className="source-status">CPSC · FDA · FSIS live</span>
-            <span>No account needed</span>
-          </div>
-
-          <section className="board-section" id="recalls" aria-labelledby="recalls-heading">
-            <div className="section-heading">
-              <h2 id="recalls-heading">The latest. Worth a look.</h2>
-              <span className="text-link" aria-live="polite">
-                {stats ? `${stats.recallsTracked.toLocaleString()} tracked · updated ${stats.lastCrawlAt ? timeAgo(stats.lastCrawlAt, now) : "—"}` : "…"}
-              </span>
-            </div>
-            <div className="search-row">
-              <div className="search-box">
-                <svg className="icon" aria-hidden="true"><use href="#i-search" /></svg>
-                <label htmlFor="recall-search" className="sr-only">Search a product, brand, or model</label>
-                <input id="recall-search" type="search" placeholder="Search a product, brand, or model…" autoComplete="off" value={query} onChange={(e) => setQuery(e.target.value)} />
-                <button className="clear-search" aria-label="Clear search" hidden={query === ""} onClick={() => setQuery("")}>
-                  <svg className="icon" aria-hidden="true"><use href="#i-close" /></svg>
-                </button>
               </div>
-            </div>
-            <p className="sr-only" role="status" aria-live="polite">
-              {activeSearch && !searching ? `${shown.length} ${shown.length === 1 ? "recall" : "recalls"} match your search.` : ""}
-            </p>
-            <div className="recall-grid" id="recall-grid">
-              {shown.map((recall) => (
-                <RecallCard key={recall._id} recall={recall} onShow={() => setScreen({ kind: "recall", recall })} />
-              ))}
-            </div>
-            {shown.length === 0 && (
-              <div className="empty-state">
-                <h3>{searching ? "Searching…" : activeSearch ? "No matches." : status === "LoadingFirstPage" ? "Loading the corpus…" : "Corpus is seeding."}</h3>
-                <p>{searching ? "Looking across the live corpus." : activeSearch ? "Try another product, brand, or model — or clear the search for the full live list." : "Real recalls appear here the moment the next crawl lands."}</p>
-                {activeSearch && !searching && <button className="button button--outline" onClick={() => setQuery("")}>Clear search</button>}
+              <div className="search-row">
+                <div className="search-box">
+                  <svg className="icon" aria-hidden="true"><use href="#i-search" /></svg>
+                  <label htmlFor="recall-search" className="sr-only">Search a product, brand, or model</label>
+                  <input id="recall-search" type="search" placeholder="Search a product, brand, or model…" autoComplete="off" value={query} onChange={(e) => setQuery(e.target.value)} />
+                  <button className="clear-search" aria-label="Clear search" hidden={query === ""} onClick={() => setQuery("")}>
+                    <svg className="icon" aria-hidden="true"><use href="#i-close" /></svg>
+                  </button>
+                </div>
               </div>
-            )}
-            {!activeSearch && status === "CanLoadMore" && (
-              <div className="load-more-row">
-                <button className="button button--outline" onClick={() => loadMore(12)}>Load more recalls</button>
+              <p className="sr-only" role="status" aria-live="polite">
+                {activeSearch && !searching ? `${shown.length} ${shown.length === 1 ? "recall" : "recalls"} match your search.` : ""}
+              </p>
+              <div className="recall-grid" id="recall-grid">
+                {shown.map((recall) => (
+                  <RecallCard key={recall._id} recall={recall} onShow={() => setScreen({ kind: "recall", recall })} />
+                ))}
               </div>
-            )}
-            <p className="board-note board-live-note">
-              Every card is a real official notice — nothing is invented. See each notice for affected models and remedy details.<br />
-              Live corpus from CPSC, FDA, and USDA-FSIS, refreshed automatically on crons.
-            </p>
-          </section>
-        </main>
+              {shown.length === 0 && (
+                <div className="empty-state">
+                  <h3>{searching ? "Searching…" : activeSearch ? "No matches." : status === "LoadingFirstPage" ? "Loading the corpus…" : "Corpus is seeding."}</h3>
+                  <p>{searching ? "Looking across the live corpus." : activeSearch ? "Try another product, brand, or model — or clear the search for the full live list." : "Real recalls appear here the moment the next crawl lands."}</p>
+                  {activeSearch && !searching && <button className="button button--outline" onClick={() => setQuery("")}>Clear search</button>}
+                </div>
+              )}
+              {!activeSearch && status === "CanLoadMore" && (
+                <div className="load-more-row">
+                  <button className="button button--outline" onClick={() => loadMore(12)}>Load more recalls</button>
+                </div>
+              )}
+              <p className="board-note board-live-note">
+                Every card is a real official notice — nothing is invented. See each notice for affected models and remedy details.<br />
+                Live corpus from CPSC, FDA, and USDA-FSIS, refreshed automatically on crons.
+              </p>
+            </section>
+          </main>
+        )}
       </div>
 
-      <section className="how-section" id="how-it-works" aria-labelledby="how-heading">
-        <div className="wrap" style={{ position: "relative" }}>
-          <p className="eyebrow"><span className="orange-square" aria-hidden="true" />Less admin. More peace of mind.</p>
-          <h2 id="how-heading">From receipt to resolution.</h2>
-          <ol className="steps">
-            <li className="step"><span className="step-number">01</span><svg className="step-icon" aria-hidden="true"><use href="#i-receipt" /></svg><div><h3 className="step-title">Forward a receipt</h3><p className="step-description">Add the purchases you want us to watch.</p></div></li>
-            <li className="step"><span className="step-number">02</span><svg className="step-icon" aria-hidden="true"><use href="#i-bell" /></svg><div><h3 className="step-title">We watch for recalls</h3><p className="step-description">Get alerted when a recall matches.</p></div></li>
-            <li className="step"><span className="step-number">03</span><svg className="step-icon" aria-hidden="true"><use href="#i-send" /></svg><div><h3 className="step-title">Approve your claim</h3><p className="step-description">We prepare it. You review. We send.</p></div></li>
-          </ol>
-          <div className="how-cta">
-            <button className="button button--orange" onClick={open("welcome")}>Get started <Arrow /></button>
+      {route === "desk" ? (
+        <section className="how-section how-section--slim" aria-label="Site footer">
+          <div className="wrap" style={{ position: "relative" }}>
+            <SiteFooter open={open} />
           </div>
-          <footer className="site-footer">
-            <Brand />
-            <div className="footer-links">
-              <button onClick={open("about")}>About</button>
-              <button onClick={open("privacy")}>Privacy</button>
-              <button onClick={open("sources")}>Official sources</button>
-              <a href={REPO} target="_blank" rel="noopener noreferrer">GitHub</a>
+        </section>
+      ) : (
+        <section className="how-section" id="how-it-works" aria-labelledby="how-heading">
+          <div className="wrap" style={{ position: "relative" }}>
+            <p className="eyebrow"><span className="orange-square" aria-hidden="true" />Less admin. More peace of mind.</p>
+            <h2 id="how-heading">From receipt to resolution.</h2>
+            <ol className="steps">
+              <li className="step"><span className="step-number">01</span><svg className="step-icon" aria-hidden="true"><use href="#i-receipt" /></svg><div><h3 className="step-title">Add a receipt</h3><p className="step-description">Photo, pasted text or a forwarded email — the purchases you want us to watch.</p></div></li>
+              <li className="step"><span className="step-number">02</span><svg className="step-icon" aria-hidden="true"><use href="#i-bell" /></svg><div><h3 className="step-title">We watch for recalls</h3><p className="step-description">Get alerted when a recall matches.</p></div></li>
+              <li className="step"><span className="step-number">03</span><svg className="step-icon" aria-hidden="true"><use href="#i-send" /></svg><div><h3 className="step-title">Approve your claim</h3><p className="step-description">We prepare it. You review. We send.</p></div></li>
+            </ol>
+            <div className="how-cta">
+              {signedIn ? (
+                <button className="button button--orange" onClick={() => goDesk()}>Open my desk <Arrow /></button>
+              ) : (
+                <button className="button button--orange" onClick={open("welcome")}>Get started <Arrow /></button>
+              )}
             </div>
-          </footer>
-        </div>
-      </section>
+            <SiteFooter open={open} />
+          </div>
+        </section>
+      )}
 
       <dialog id="info-dialog" ref={dialogRef} aria-labelledby="dialog-title" onCancel={(e) => { e.preventDefault(); close(); }} onClick={(e) => { if (e.target === dialogRef.current) close(); }}>
         <div className="dialog-header">

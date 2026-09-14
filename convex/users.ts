@@ -17,6 +17,7 @@ export const myDesk = query({
       ingestAddress: v.union(v.string(), v.null()),
       itemsCount: v.number(),
       matchesCount: v.number(),
+      claimsCount: v.number(),
     }),
     v.null(),
   ),
@@ -38,12 +39,17 @@ export const myDesk = query({
       .query("matches")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .take(101);
+    const claims = await ctx.db
+      .query("claims")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .take(101);
     return {
       email: user.email ?? null,
       userTag: user.userTag ?? null,
       ingestAddress,
-      itemsCount: items.length,
+      itemsCount: items.filter((i) => i.status === "active").length,
       matchesCount: matches.filter((m) => m.state !== "dismissed").length,
+      claimsCount: claims.length,
     };
   },
 });

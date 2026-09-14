@@ -140,6 +140,12 @@ export default defineSchema({
     purchaseDate: v.optional(v.string()),
     retailer: v.optional(v.string()),
     quantity: v.optional(v.number()),
+    /** National Drug Code, normalized to the 11-digit 5-4-2 hyphenated form
+     * (e.g. "72205-0003-99") — pharmacy receipts, Rx labels, OTC boxes. */
+    ndc: v.optional(v.string()),
+    /** Lot / batch number as printed (uppercased, <=40 chars). Drug and food
+     * recalls are usually lot-specific. */
+    lot: v.optional(v.string()),
     confidence: v.number(),
     status: v.union(v.literal("active"), v.literal("dismissed")),
     /** product+brand+model, for the recall-side sweep's search index. */
@@ -148,6 +154,10 @@ export default defineSchema({
     needsAdjudication: v.optional(v.boolean()),
   })
     .index("by_userId", ["userId"])
+    // Exact-code side doors for the recall-side sweep: a NEW recall listing
+    // an item's UPC/NDC must find it even when the texts share no words.
+    .index("by_upc", ["upc"])
+    .index("by_ndc", ["ndc"])
     .searchIndex("search_items", { searchField: "searchText" }),
 
   /** UPC -> recall lookup so UPC-exact matches bypass the title search
@@ -249,6 +259,9 @@ export default defineSchema({
     ),
     itemIdsCreated: v.array(v.id("items")),
     error: v.optional(v.string()),
+    /** True for paste / photo / typed-in intakes: they count toward the
+     * daily budget whatever they later classify as (each cost an LLM call). */
+    manual: v.optional(v.boolean()),
   })
     .index("by_messageId", ["messageId"])
     .index("by_userId", ["userId"]),

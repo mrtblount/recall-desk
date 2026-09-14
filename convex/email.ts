@@ -5,6 +5,7 @@ import { components, internal } from "./_generated/api";
 import { env, internalMutation, internalQuery } from "./_generated/server";
 import { routeClaimReply } from "./claims";
 import { aliasTag, bareAddress, RECEIPT_HINT_RE } from "./emailParse";
+import { receiptCapReached } from "./intakeCap";
 import { llmPool } from "./pools";
 import schema from "./schema";
 
@@ -14,10 +15,6 @@ export const agentmail: AgentMail = new AgentMail(components.agentmail, {
   onMessageReceived: internal.email.onMessageReceived,
   onEvent: internal.claims.onMailEvent,
 });
-
-/** Per-user extraction budget (spam brake): beyond this many receipt
- * classifications per UTC day, further mail is ledgered as "unknown". */
-const MAX_RECEIPTS_PER_USER_PER_DAY = 20;
 
 function asString(x: unknown): string {
   return typeof x === "string" ? x : "";
@@ -110,19 +107,9 @@ export const onMessageReceived = internalMutation({
         `${asString(m.subject)} ${asString(m.preview)} ${asString(m.text).slice(0, 500)}`,
       );
       classification = looksLikeReceipt ? "receipt" : "unknown";
-      if (classification === "receipt") {
-        const dayStart = Date.now() - 24 * 60 * 60 * 1000;
-        const recent = await ctx.db
-          .query("emailsProcessed")
-          .withIndex("by_userId", (q) =>
-            q.eq("userId", userId).gte("_creationTime", dayStart),
-          )
-          .take(MAX_RECEIPTS_PER_USER_PER_DAY + 1);
-        const receiptsToday = recent.filter((r) => r.classification === "receipt").length;
-        if (receiptsToday >= MAX_RECEIPTS_PER_USER_PER_DAY) {
-          console.warn(`per-user daily receipt cap hit for ${userId} — ledgered as unknown`);
-          classification = "unknown";
-        }
+      if (classification === "receipt" && (await receiptCapReached(ctx, userId))) {
+        console.warn(`inbound ${messageId.slice(0, 24)}…: per-user daily receipt cap reached; ledgered as unknown`);
+        classification = "unknown";
       }
     }
 

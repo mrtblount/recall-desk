@@ -16,11 +16,14 @@ import {
 export const DAILY_BUDGET_USD = 5;
 export const TOTAL_BUDGET_USD = 70;
 
-/** USD per 1M tokens, standard tier — verified live 2026-09-09 at
- * platform.openai.com/docs/pricing. Unknown models use the strong price. */
+/** USD per 1M tokens, standard tier, uncached input — re-verified live
+ * 2026-09-14 at developers.openai.com/api/docs/pricing (luna $0.20/$1.20,
+ * terra $2.00/$12.00). The 2026-09-09 table carried half these numbers, so
+ * the ledger under-counted early spend 2x; the guard must never round down.
+ * Unknown models use the strong price. */
 const PRICES: Record<string, { input: number; output: number }> = {
-  "gpt-5.6-luna": { input: 0.1, output: 0.6 },
-  "gpt-5.6-terra": { input: 1.0, output: 6.0 },
+  "gpt-5.6-luna": { input: 0.2, output: 1.2 },
+  "gpt-5.6-terra": { input: 2.0, output: 12.0 },
 };
 
 function todayUtc(): string {
@@ -93,8 +96,10 @@ type StructuredCall = {
   model: string;
   system: string;
   user: string;
-  /** data: URL of a receipt photo, for the upload path. */
-  imageDataUrl?: string;
+  /** data: URLs of receipt / product photos for the upload path (1..4).
+   * Several photos = one product from several sides, or one long receipt in
+   * overlapping parts; the prompt tells the model to merge them. */
+  imageDataUrls?: string[];
   schemaName: string;
   schema: Record<string, unknown>;
   maxOutputTokens: number;
@@ -135,8 +140,16 @@ export async function callStructured(
       console.error(`!!! LLM BUDGET GUARD HALTED CALL (${call.purpose}): ${budget.reason}`);
       throw new BudgetHaltError(`LLM budget guard: ${budget.reason}`);
     }
+    const userText =
+      attempt === 0
+        ? call.user
+        : `${call.user}\n\nIMPORTANT: your previous answer was not valid JSON for the schema. Return ONLY valid JSON.`;
+    // Bounded wait: the action has a hard execution limit, and a hung fetch
+    // that hits it skips every caller's `finally` (uploaded photos would
+    // outlive the request). 3 minutes is far beyond any observed call.
     const res = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
+      signal: AbortSignal.timeout(180_000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
@@ -148,20 +161,19 @@ export async function callStructured(
           {
             role: "user",
             content:
-              call.imageDataUrl !== undefined
+              call.imageDataUrls !== undefined
                 ? [
-                    {
-                      type: "input_text",
-                      text:
-                        attempt === 0
-                          ? call.user
-                          : `${call.user}\n\nIMPORTANT: your previous answer was not valid JSON for the schema. Return ONLY valid JSON.`,
-                    },
-                    { type: "input_image", image_url: call.imageDataUrl },
+                    { type: "input_text", text: userText },
+                    // "original": the vision guide's own OCR recommendation —
+                    // receipt digits are small, and the client already capped
+                    // the long edge at 2048 px, so this is ~3.7k tokens/photo.
+                    ...call.imageDataUrls.map((imageUrl) => ({
+                      type: "input_image",
+                      image_url: imageUrl,
+                      detail: "original",
+                    })),
                   ]
-                : attempt === 0
-                  ? call.user
-                  : `${call.user}\n\nIMPORTANT: your previous answer was not valid JSON for the schema. Return ONLY valid JSON.`,
+                : userText,
           },
         ],
         text: {
@@ -223,34 +235,73 @@ export async function callStructured(
   throw new Error("unreachable");
 }
 
-export const RECEIPT_SYSTEM_PROMPT =
-  "You extract purchased items from retailer receipts (email text, pasted text, or a photo of a receipt). " +
-  "Only list physical products actually purchased — never invent, never include suggestions, ads, or subscriptions. " +
-  "If the content is not a purchase receipt or order confirmation, set is_receipt to false and items to an empty array. " +
-  "Use empty strings for unknown fields, digits only for UPC.";
+/** Shared by the paste, photo and forwarded-email paths — one set of rules so
+ * a pharmacy label reads the same whichever door it came through. The privacy
+ * rule is load-bearing: pharmacy receipts print the patient's name, DOB,
+ * address, phone, prescriber, plan and Rx number next to the drug facts, and
+ * none of that may ever reach the items table. */
+export const RECEIPT_SYSTEM_PROMPT = [
+  "You extract products from evidence that someone bought or owns them. The evidence may be a store or " +
+    "online receipt, an order confirmation, an order-page screenshot, a PHARMACY receipt or prescription " +
+    "label, a pill bottle, an over-the-counter medicine box, product packaging or labels (front or back), " +
+    "or an appliance rating plate. It arrives as pasted text, a forwarded email, or one or more photos.",
+  "is_receipt means 'this content is evidence of a purchased or owned product'. Set it true for ALL of the " +
+    "kinds above. Set it false, with an empty items array, only when no identifiable product was bought or " +
+    "owned (a restaurant menu, a random photo, a bank statement, a newsletter).",
+  "Only list physical products actually purchased or owned — never suggestions, ads, related items, " +
+    "subscriptions, services, fees, taxes or gift cards.",
+  "Medications: product = drug name + strength + form (e.g. 'Rosuvastatin Calcium 10 mg tablets'); " +
+    "brand = the manufacturer or labeler (e.g. 'Novadoz Pharmaceuticals'); model = '' unless a product code " +
+    "is printed; ndc = the NDC exactly as printed (e.g. '72205-0003-99'); lot = the lot or batch number if " +
+    "printed; category = 'medication'; order_date = the fill date.",
+  "HARD PRIVACY RULE: never output a patient name, date of birth, address, phone number, prescriber name, " +
+    "Rx or prescription number, insurance or plan details, or payment card digits — not in any field, not " +
+    "even partially. Keep only product facts.",
+  "Several photos may show one product from different sides, one long receipt in overlapping parts, OR " +
+    "several unrelated receipts: merge duplicates, never duplicate an item, and when the photos come from " +
+    "different receipts give each item its own retailer and purchase_date (a pharmacy fill and a hardware " +
+    "receipt must not share a date). Photos may be rotated or upside down — read the text in whatever " +
+    "orientation it appears.",
+  "Never invent. Use an empty string for anything not present. UPC is digits only. Quantity is 1 when not " +
+    "stated.",
+].join(" ");
+
+/** The forwarded-email door adds one scoping rule on top of the shared prompt. */
+export const RECEIPT_EMAIL_SYSTEM_PROMPT =
+  RECEIPT_SYSTEM_PROMPT +
+  " This content is a forwarded email: list only products purchased in THIS email, never products from " +
+  "quoted earlier messages, recommendations or marketing blocks.";
 
 export const RECEIPT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["is_receipt", "retailer", "order_date", "confidence", "items"],
   properties: {
-    is_receipt: { type: "boolean" },
-    retailer: { type: "string", description: "Retailer name, or empty string if unknown" },
-    order_date: { type: "string", description: "YYYY-MM-DD if present, else empty string" },
-    confidence: { type: "number", description: "0-1 confidence this is a purchase receipt parsed correctly" },
+    is_receipt: {
+      type: "boolean",
+      description:
+        "true when the content is evidence of a purchased or owned product (receipt, order, pharmacy label, packaging, rating plate); false only when no product is identifiable",
+    },
+    retailer: { type: "string", description: "Retailer of the receipt (or of the first receipt when several), or empty string if unknown" },
+    order_date: { type: "string", description: "Purchase/fill date of the receipt (or of the first receipt when several) as YYYY-MM-DD, else empty string" },
+    confidence: { type: "number", description: "0-1 confidence the products were read correctly" },
     items: {
       type: "array",
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["product", "brand", "model", "upc", "category", "quantity"],
+        required: ["product", "brand", "model", "upc", "ndc", "lot", "category", "quantity", "retailer", "purchase_date"],
         properties: {
-          product: { type: "string" },
-          brand: { type: "string", description: "empty string if unknown" },
-          model: { type: "string", description: "model number, empty string if unknown" },
+          product: { type: "string", description: "product name; for medications drug name + strength + form" },
+          brand: { type: "string", description: "brand, or manufacturer/labeler for medications; empty string if unknown" },
+          model: { type: "string", description: "model number or product code, empty string if unknown" },
           upc: { type: "string", description: "UPC/EAN digits only, empty string if unknown" },
-          category: { type: "string", description: "short category like electronics, baby, home; empty string if unknown" },
+          ndc: { type: "string", description: "National Drug Code exactly as printed (e.g. 72205-0003-99), empty string if none" },
+          lot: { type: "string", description: "lot or batch number as printed, empty string if none" },
+          category: { type: "string", description: "short category like electronics, baby, home, medication; empty string if unknown" },
           quantity: { type: "number" },
+          retailer: { type: "string", description: "retailer this item was bought from when it differs from the receipt-level retailer (several receipts in one upload), else empty string" },
+          purchase_date: { type: "string", description: "YYYY-MM-DD purchase or fill date for THIS item when it differs from the receipt-level order_date, else empty string" },
         },
       },
     },
@@ -297,11 +348,7 @@ export const extractReceipt = internalAction({
       result = await callStructured(ctx, {
       purpose: "receipt-extraction",
       model: env.OPENAI_MODEL_CHEAP ?? "gpt-5.6-luna",
-      system:
-        "You extract purchased items from retailer receipt/order-confirmation emails. " +
-        "Only list physical products actually purchased in THIS email — never invent, never include suggestions, ads, or subscriptions. " +
-        "If the email is not a purchase receipt or order confirmation, set is_receipt to false and items to an empty array. " +
-        "Use empty strings for unknown fields, digits only for UPC.",
+      system: RECEIPT_EMAIL_SYSTEM_PROMPT,
       user: `Subject: ${msg.subject ?? ""}\n\n${capped}`,
       schemaName: "receipt_extraction",
       schema: RECEIPT_SCHEMA as unknown as Record<string, unknown>,

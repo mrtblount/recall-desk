@@ -14,6 +14,7 @@ Built solo for the [Convex All Gas Hackathon](https://www.convex.dev/hackathons/
 - [Firecrawl](https://firecrawl.dev) — crawls the recall feeds and the manufacturers' remedy portals
 - [AgentMail](https://agentmail.to) — the product's interface: receipts in, claims out, replies back
 - [OpenAI](https://openai.com) — receipt extraction, remedy-procedure extraction, match adjudication, claim drafting
+- [heic-to](https://github.com/hoppergee/heic-to) (LGPL-3.0) converts iPhone HEIC photos to JPEG in the browser, loaded unmodified as a separate lazy chunk
 - Vite + React + TypeScript
 
 ## Run it

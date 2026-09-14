@@ -1,7 +1,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import {
   env,
   internalAction,
@@ -13,10 +13,117 @@ import {
 import { BudgetHaltError, callStructured, TerminalExtractionError } from "./ai";
 import { sendGuarded } from "./mail";
 import { CANDIDATE_MIN_SCORE, itemRecallScore } from "./matchScore";
+import { extractNdcs, ndcKey } from "./ndc";
 import { crawlPool, llmPool } from "./pools";
 import schema from "./schema";
 
 const MAX_CANDIDATES = 6;
+
+type RecallCodeFields = Pick<
+  Doc<"recalls">,
+  "source" | "title" | "brandNames" | "productDesc" | "upcs" | "description"
+>;
+
+/** Drug codes only exist in FDA enforcement text; a CPSC model range or an
+ * FSIS establishment number shaped 5-4-2 must not be minted as an NDC. */
+function recallNdcs(recall: Pick<Doc<"recalls">, "source" | "productDesc" | "description">): string[] {
+  return recall.source === "fda" ? extractNdcs(`${recall.productDesc} ${recall.description}`) : [];
+}
+type ItemScoreFields = Pick<Doc<"items">, "product" | "brand" | "model" | "upc" | "ndc" | "lot">;
+
+/** The scorer's view of a recall. NDCs are mined from the FDA text on the
+ * fly (never stored — contentHash must stay the source's); description
+ * doubles as the lot-search text because FDA puts "Codes: Lot #: …" there. */
+export function recallScoreView(recall: RecallCodeFields) {
+  return {
+    title: recall.title,
+    brandNames: recall.brandNames,
+    productDesc: recall.productDesc,
+    upcs: recall.upcs,
+    ndcs: recallNdcs(recall),
+    codeText: recall.description,
+  };
+}
+
+function itemScoreView(item: ItemScoreFields) {
+  return {
+    product: item.product,
+    brand: item.brand,
+    model: item.model,
+    upc: item.upc,
+    ndc: item.ndc,
+    lot: item.lot,
+  };
+}
+
+/** How the item reached the desk, from the ledger id prefix stamped at
+ * intake ("photo:", "paste:", "manual:"); anything else is a forwarded
+ * email message id. */
+export function enteredVia(sourceMessageId: string): "photo" | "paste" | "manual" | "email" {
+  if (sourceMessageId.startsWith("photo:")) return "photo";
+  if (sourceMessageId.startsWith("paste:")) return "paste";
+  if (sourceMessageId.startsWith("manual:")) return "manual";
+  return "email";
+}
+
+/** One line of exact codes per candidate: normalized NDCs plus the FDA
+ * "Codes:" tail (lots, expiry) so the adjudicator can check lot overlap. */
+export function candidateCodesLine(recall: RecallCodeFields): string {
+  const parts: string[] = [];
+  const ndcs = recallNdcs(recall);
+  if (ndcs.length > 0) parts.push(`NDC ${ndcs.slice(0, 10).join(", ")}`);
+  const marker = "Codes:";
+  const at = recall.description.indexOf(marker);
+  if (at >= 0) {
+    // Same window the lot prefilter scans (the FDA mapper caps Codes at
+    // 400), so a lot the prefilter credited is always visible to the judge.
+    const tail = recall.description.slice(at + marker.length).trim().slice(0, 400);
+    if (tail !== "") parts.push(tail);
+  }
+  return parts.length > 0 ? parts.join(" | ") : "none listed";
+}
+
+/** The adjudicator's user prompt — pure so the wording is unit-testable. */
+export function adjudicationUserPrompt(
+  item: ItemScoreFields & Pick<Doc<"items">, "sourceMessageId">,
+  candidates: Array<RecallCodeFields & Pick<Doc<"recalls">, "status">>,
+): string {
+  const via = enteredVia(item.sourceMessageId);
+  const candidateBlock = candidates
+    .map((r, i) => {
+      return `[${i}] ${r.title}\n    brands: ${r.brandNames.slice(0, 5).join("; ") || "n/a"}\n    products: ${r.productDesc.slice(0, 300) || "n/a"}\n    upcs: ${r.upcs.slice(0, 8).join(", ") || "none listed"}\n    codes: ${candidateCodesLine(r)}\n    status: ${r.status}`;
+    })
+    .join("\n\n");
+  const itemLines = [
+    "PURCHASED ITEM:",
+    `product: ${item.product}`,
+    `brand: ${item.brand ?? "unknown"}`,
+    `model: ${item.model ?? "unknown"}`,
+    `upc: ${item.upc ?? "unknown"}`,
+    `ndc: ${item.ndc ?? "unknown"}`,
+    `lot: ${item.lot ?? "unknown"}`,
+    `entered via: ${via}`,
+  ];
+  if (via === "manual") {
+    itemLines.push(
+      "note: typed in by the user from memory — the description is approximate and usually has no model number. " +
+        "If the recall's brand AND product type clearly cover this description (especially a broad recall covering a whole " +
+        "product line or sales window), answer is_match true with confidence between 0.4 and 0.65 and a rationale that " +
+        "names exactly what the user must confirm (model number, feature, purchase window). Answer is_match false only for " +
+        "a different brand, a different product type, or an explicitly excluded model.",
+    );
+  }
+  return `${itemLines.join("\n")}\n\nCANDIDATE RECALLS:\n${candidateBlock}`;
+}
+
+export const ADJUDICATION_SYSTEM_PROMPT =
+  "You decide whether a consumer's purchased item is covered by official product recalls. " +
+  "Be conservative: is_match only when the recall clearly covers this specific product/model/variant. " +
+  "Same brand alone is NOT a match. Cite the specific overlap in the rationale. " +
+  "For medications, the same drug from a different manufacturer/labeler or a different NDC is NOT a match; " +
+  "a matching NDC with unknown lot IS a match (rationale must say the lot should be checked). " +
+  "Confidence below 0.7 is shown to the user as a 'possible match — confirm your model' and sends no alert, so use " +
+  "that band when the product line matches but the identifying details are unknown.";
 
 /**
  * Stage 1 — cheap prefilter, no LLM: full-text search over recall titles
@@ -45,18 +152,26 @@ export const candidatesForItem = internalQuery({
       .filter(Boolean)
       .join(" ")
       .slice(0, 200);
-    // UPC-exact hits bypass the title search entirely — terse receipt text
-    // can share zero title tokens while the UPC is listed verbatim.
+    // UPC/NDC-exact hits bypass the title search entirely — terse receipt
+    // text (or a pharmacy fill) can share zero title tokens while the code
+    // is listed verbatim. Both families live in recallUpcs; NDC keys are
+    // "ndc:"-prefixed so a 12-digit UPC can never collide with one.
     const seen = new Set<string>();
     const hits = [];
-    if (item.upc) {
-      const upcRows = await ctx.db
+    const codeKeys = [
+      ...(item.upc ? [item.upc] : []),
+      ...(item.ndc ? [ndcKey(item.ndc)] : []),
+    ];
+    for (const key of codeKeys) {
+      // Wide enough that a code shared by many terminated FDA rows (one NDC,
+      // dozens of lots over the years) cannot crowd out the live recall.
+      const codeRows = await ctx.db
         .query("recallUpcs")
-        .withIndex("by_upc", (q) => q.eq("upc", item.upc!))
-        .take(8);
-      for (const row of upcRows) {
+        .withIndex("by_upc", (q) => q.eq("upc", key))
+        .take(40);
+      for (const row of codeRows) {
         const recall = await ctx.db.get("recalls", row.recallId);
-        if (recall !== null && !seen.has(recall._id)) {
+        if (recall !== null && recall.status !== "closed" && !seen.has(recall._id)) {
           seen.add(recall._id);
           hits.push(recall);
         }
@@ -83,18 +198,8 @@ export const candidatesForItem = internalQuery({
     for (const recall of hits) {
       if (recall.status === "closed") continue;
       const { score, reasons } = itemRecallScore({
-        item: {
-          product: item.product,
-          brand: item.brand,
-          model: item.model,
-          upc: item.upc,
-        },
-        recall: {
-          title: recall.title,
-          brandNames: recall.brandNames,
-          productDesc: recall.productDesc,
-          upcs: recall.upcs,
-        },
+        item: itemScoreView(item),
+        recall: recallScoreView(recall),
       });
       if (score >= CANDIDATE_MIN_SCORE) {
         scored.push({ recall, prefilterScore: score, reasons });
@@ -147,23 +252,16 @@ export const adjudicateItem = internalAction({
     }
     const { item, candidates } = found;
 
-    const candidateBlock = candidates
-      .map((c, i) => {
-        const r = c.recall;
-        return `[${i}] ${r.title}\n    brands: ${r.brandNames.slice(0, 5).join("; ") || "n/a"}\n    products: ${r.productDesc.slice(0, 300) || "n/a"}\n    upcs: ${r.upcs.slice(0, 8).join(", ") || "none listed"}\n    status: ${r.status}`;
-      })
-      .join("\n\n");
-
     let result: Record<string, unknown>;
     try {
       result = await callStructured(ctx, {
         purpose: "match-adjudication",
         model: env.OPENAI_MODEL_CHEAP ?? "gpt-5.6-luna",
-        system:
-          "You decide whether a consumer's purchased item is covered by official product recalls. " +
-          "Be conservative: is_match only when the recall clearly covers this specific product/model/variant. " +
-          "Same brand alone is NOT a match. Cite the specific overlap in the rationale.",
-        user: `PURCHASED ITEM:\nproduct: ${item.product}\nbrand: ${item.brand ?? "unknown"}\nmodel: ${item.model ?? "unknown"}\nupc: ${item.upc ?? "unknown"}\n\nCANDIDATE RECALLS:\n${candidateBlock}`,
+        system: ADJUDICATION_SYSTEM_PROMPT,
+        user: adjudicationUserPrompt(
+          item,
+          candidates.map((c) => c.recall),
+        ),
         schemaName: "recall_match_adjudication",
         schema: ADJUDICATION_SCHEMA as unknown as Record<string, unknown>,
         maxOutputTokens: 1_200,
@@ -565,31 +663,35 @@ export const itemsPlausiblyAffected = internalQuery({
       .query("items")
       .withSearchIndex("search_items", (s) => s.search("searchText", queryText))
       .take(60);
-    // UPC side door for items whose text shares nothing with the title.
-    for (const upc of recall.upcs.slice(0, 20)) {
-      // recallUpcs maps upc->recall; here we need items with that upc — the
-      // items search index covers text only, so scan the small search
-      // shortfall via the upc field on the already-fetched set plus a
-      // bounded direct filter is unnecessary: item-side UPC matching is
-      // already guaranteed by candidatesForItem at item creation.
-      void upc;
-    }
+    // Mined once per sweep, not once per item — extractNdcs walks up to
+    // 5.5k chars of FDA text.
+    const recallView = recallScoreView(recall);
+    // Exact-code side doors: item-side lookups at creation only cover recalls
+    // that already existed. A NEW recall listing a UPC/NDC must reach items
+    // whose text shares nothing with its title (a terse "Rx fill", a bare
+    // model line), so the sweep also walks the code indexes. Bounded: at
+    // most 20 codes per family, 20 items per code.
+    const seenIds = new Set(items.map((i) => i._id));
+    const addByCode = async (index: "by_upc" | "by_ndc", field: "upc" | "ndc", code: string) => {
+      const rows = await ctx.db
+        .query("items")
+        .withIndex(index, (q) => q.eq(field, code))
+        .take(20);
+      for (const row of rows) {
+        if (!seenIds.has(row._id)) {
+          seenIds.add(row._id);
+          items.push(row);
+        }
+      }
+    };
+    for (const upc of recall.upcs.slice(0, 20)) await addByCode("by_upc", "upc", upc);
+    for (const ndc of recallView.ndcs.slice(0, 20)) await addByCode("by_ndc", "ndc", ndc);
     const out: Array<Id<"items">> = [];
     for (const item of items) {
       if (item.status !== "active") continue;
       const { score } = itemRecallScore({
-        item: {
-          product: item.product,
-          brand: item.brand,
-          model: item.model,
-          upc: item.upc,
-        },
-        recall: {
-          title: recall.title,
-          brandNames: recall.brandNames,
-          productDesc: recall.productDesc,
-          upcs: recall.upcs,
-        },
+        item: itemScoreView(item),
+        recall: recallView,
       });
       if (score >= CANDIDATE_MIN_SCORE) out.push(item._id);
       if (out.length >= 25) {

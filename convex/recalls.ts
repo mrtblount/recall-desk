@@ -6,6 +6,7 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import { extractNdcs, ndcKey } from "./ndc";
 import { crawlPool, llmPool } from "./pools";
 import schema, { recallDoc, vRecallStatus, vSource } from "./schema";
 
@@ -31,6 +32,30 @@ const DIFF_FIELDS = [
   "unitsText", "imageUrl", "publishedAt", "consumerContact",
   "brandNames", "upcs", "remedyOptions",
 ] as const;
+
+/**
+ * Every exact-lookup key a recall contributes to recallUpcs: its UPCs
+ * verbatim plus "ndc:"-prefixed NDCs mined from the FDA product/description
+ * text. Computed on the fly, never stored — the recalls doc and its
+ * contentHash stay exactly what the source published, so adding a code
+ * family can never masquerade as a content change.
+ */
+export function recallCodeKeys(doc: {
+  source: string;
+  upcs: string[];
+  productDesc: string;
+  description: string;
+}): string[] {
+  // NDCs are an FDA-only concept: a CPSC model range or FSIS establishment
+  // number that happens to be shaped 5-4-2 must not become a drug-code key.
+  const ndcs = doc.source === "fda" ? extractNdcs(`${doc.productDesc} ${doc.description}`) : [];
+  return [...new Set([...doc.upcs, ...ndcs.map(ndcKey)])];
+}
+
+/** Per-recall recallUpcs read bound. UPC extraction caps at 50 and NDC
+ * extraction at 50, so 200 is always exhaustive — a short read here would
+ * strand stale rows on re-sync. */
+const CODE_ROWS_PER_RECALL = 200;
 
 /** Touch lastSeenAt at most this often on unchanged rows — an every-run
  * patch at 1,500-row scale is pure churn that re-pushes every open board
@@ -89,17 +114,22 @@ export const upsertBatchFromCrawl = internalMutation({
       await llmPool.enqueueAction(ctx, internal.match.recallChanged, { recallId });
       matchSweeps++;
     };
-    const syncUpcs = async (recallId: Id<"recalls">, prior: string[], next: string[]) => {
-      for (const row of await ctx.db
+    // Reconcile the recall's exact-lookup rows (UPCs + "ndc:" keys) against
+    // what is ACTUALLY stored rather than against the prior doc's keys: rows
+    // written before NDC keys existed self-heal on the next content change
+    // instead of waiting for the backfill.
+    const syncCodes = async (recallId: Id<"recalls">, next: string[]) => {
+      const rows = await ctx.db
         .query("recallUpcs")
         .withIndex("by_recallId", (q) => q.eq("recallId", recallId))
-        .take(60)) {
+        .take(CODE_ROWS_PER_RECALL);
+      const have = new Set<string>();
+      for (const row of rows) {
         if (!next.includes(row.upc)) await ctx.db.delete("recallUpcs", row._id);
+        else have.add(row.upc);
       }
-      for (const upc of next) {
-        if (!prior.includes(upc)) {
-          await ctx.db.insert("recallUpcs", { upc, recallId });
-        }
+      for (const key of next) {
+        if (!have.has(key)) await ctx.db.insert("recallUpcs", { upc: key, recallId });
       }
     };
     const enqueueScrape = async (recallId: Id<"recalls">) => {
@@ -131,7 +161,10 @@ export const upsertBatchFromCrawl = internalMutation({
         // Detail scrapes are CPSC-specific (their notices carry the
         // manufacturer remedy links; FDA rows have no per-record URL).
         if (doc.source === "cpsc") await enqueueScrape(id);
-        if (doc.upcs.length > 0) await syncUpcs(id, [], doc.upcs);
+        // Fresh row: nothing to reconcile, insert its keys directly.
+        for (const key of recallCodeKeys(doc)) {
+          await ctx.db.insert("recallUpcs", { upc: key, recallId: id });
+        }
         await enqueueMatchSweep(id, statusOverride ?? "active");
         inserted++;
       } else if (existing.contentHash === doc.contentHash) {
@@ -183,7 +216,7 @@ export const upsertBatchFromCrawl = internalMutation({
         });
         changedIds.push(existing._id);
         if (doc.source === "cpsc") await enqueueScrape(existing._id);
-        await syncUpcs(existing._id, existing.upcs, doc.upcs);
+        await syncCodes(existing._id, recallCodeKeys(doc));
         await enqueueMatchSweep(existing._id, nextStatus);
         updated++;
       }
@@ -230,33 +263,41 @@ export const enrichFromDetail = internalMutation({
   },
 });
 
-/** One-off: backfill recallUpcs for pre-existing rows, cursored on
- * publishedAt to stay under transaction read limits. */
+/** One-off / re-runnable: backfill recallUpcs (UPC keys AND "ndc:" keys)
+ * for pre-existing rows. Cursor-paginated over by_publishedAt so a day with
+ * hundreds of rows at one timestamp cannot be skipped (a publishedAt-based
+ * `gt` cursor did exactly that — review finding). Idempotent: keys already
+ * present are skipped, so re-running after a new code family only fills the
+ * gap. Loop until nextCursor is null. */
 export const backfillUpcsBatch = internalMutation({
-  args: { afterPublishedAt: v.number() },
-  returns: v.object({ nextCursor: v.union(v.number(), v.null()), upserted: v.number() }),
+  args: { cursor: v.union(v.string(), v.null()) },
+  returns: v.object({ nextCursor: v.union(v.string(), v.null()), upserted: v.number() }),
   handler: async (ctx, args) => {
-    const rows = await ctx.db
+    const page = await ctx.db
       .query("recalls")
-      .withIndex("by_publishedAt", (q) => q.gt("publishedAt", args.afterPublishedAt))
-      .take(250);
+      .withIndex("by_publishedAt")
+      .paginate({ numItems: 250, cursor: args.cursor });
     let upserted = 0;
-    for (const recall of rows) {
-      for (const upc of recall.upcs) {
-        const existing = await ctx.db
-          .query("recallUpcs")
-          .withIndex("by_upc", (q) => q.eq("upc", upc))
-          .take(20);
-        if (!existing.some((r) => r.recallId === recall._id)) {
-          await ctx.db.insert("recallUpcs", { upc, recallId: recall._id });
-          upserted++;
-        }
+    for (const recall of page.page) {
+      const keys = recallCodeKeys(recall);
+      if (keys.length === 0) continue;
+      // One by_recallId read per recall (bounded) beats one by_upc probe per
+      // key: FDA rows can carry dozens of NDCs.
+      const have = new Set(
+        (
+          await ctx.db
+            .query("recallUpcs")
+            .withIndex("by_recallId", (q) => q.eq("recallId", recall._id))
+            .take(CODE_ROWS_PER_RECALL)
+        ).map((r) => r.upc),
+      );
+      for (const key of keys) {
+        if (have.has(key)) continue;
+        await ctx.db.insert("recallUpcs", { upc: key, recallId: recall._id });
+        upserted++;
       }
     }
-    return {
-      nextCursor: rows.length === 250 ? rows[rows.length - 1].publishedAt : null,
-      upserted,
-    };
+    return { nextCursor: page.isDone ? null : page.continueCursor, upserted };
   },
 });
 

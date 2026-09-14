@@ -31,4 +31,8 @@ crons.interval(
 // duplicate-send path.
 crons.interval("recover stuck claims", { minutes: 15 }, internal.claims.recoverStuckClaims, {});
 
+// Receipt photos are deleted by the action that reads them; this reclaims
+// uploads whose ingest call never came (privacy: never keep a receipt image).
+crons.interval("sweep orphaned uploads", { hours: 1 }, internal.receipts.sweepOrphanedUploads, {});
+
 export default crons;

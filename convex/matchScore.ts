@@ -20,19 +20,47 @@ export type ScoreInput = {
     brand?: string;
     model?: string;
     upc?: string;
+    /** National Drug Code, normalized 5-4-2 (see ndc.ts). */
+    ndc?: string;
+    /** Lot / batch as printed (uppercased upstream). */
+    lot?: string;
   };
   recall: {
     title: string;
     brandNames: string[];
     productDesc: string;
     upcs: string[];
+    /** NDCs mined from productDesc + description, normalized 5-4-2. */
+    ndcs: string[];
+    /** Free text carrying lot/batch codes — the FDA "Codes: Lot #: …"
+     * part lives in description, so callers pass description here. */
+    codeText: string;
   };
 };
 
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /**
- * Candidate score. UPC equality is near-proof; an exact model token is very
- * strong; brand + product token overlap builds the rest. Deterministic and
- * cheap — runs in a query over search-index hits only.
+ * Whole-token, case-insensitive presence. Alphanumeric lookarounds instead
+ * of \b: \b flips meaning when the needle starts or ends on a non-word
+ * character (a lot like "#4471"), while what we actually need is "not glued
+ * to other letters/digits" — lot "2402443" must not hit inside "D2402443",
+ * and "D2402443" must not hit inside "D24024431".
+ */
+export function hasWholeToken(haystack: string, needle: string): boolean {
+  const re = new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(needle)}(?![A-Za-z0-9])`, "i");
+  return re.test(haystack);
+}
+
+/** Lots shorter than this ("12", "A1") are too common to be evidence. */
+const MIN_LOT_LENGTH = 4;
+
+/**
+ * Candidate score. UPC equality is near-proof; an NDC match pins the exact
+ * drug/labeler/package; a lot match is strong but lots are reused across
+ * products, so it ranks below NDC; an exact model token is very strong;
+ * brand + product token overlap builds the rest. Deterministic and cheap —
+ * runs in a query over search-index hits only.
  */
 export function itemRecallScore({ item, recall }: ScoreInput): {
   score: number;
@@ -45,6 +73,23 @@ export function itemRecallScore({ item, recall }: ScoreInput): {
   if (item.upc && recall.upcs.includes(item.upc)) {
     score += 100;
     reasons.push(`UPC ${item.upc} listed in the recall`);
+  }
+  if (item.ndc && recall.ndcs.includes(item.ndc)) {
+    score += 60;
+    reasons.push(`NDC ${item.ndc} listed in the recall`);
+  }
+  const lot = item.lot?.trim() ?? "";
+  // An all-numeric "lot" under six digits is indistinguishable from a year,
+  // a count, or one segment of an NDC/UPC in the recall text (hyphens and
+  // spaces are token boundaries), so it needs a letter or six-plus digits.
+  if (lot.length >= MIN_LOT_LENGTH && (/[A-Za-z]/.test(lot) || lot.length >= 6)) {
+    // Lots are printed in the title/productDesc for some sources and in the
+    // description's "Codes:" tail for FDA — search all three.
+    const lotText = `${recall.title} ${recall.productDesc} ${recall.codeText}`;
+    if (hasWholeToken(lotText, lot)) {
+      score += 40;
+      reasons.push(`lot ${lot} listed in the recall`);
+    }
   }
   if (item.model && item.model.length >= 3) {
     const model = item.model.toLowerCase();
