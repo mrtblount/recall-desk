@@ -30,4 +30,4 @@ Secrets live in `.env.local` (gitignored) and Convex environment variables. `.en
 
 ## Status
 
-Session 0 (Aug 30, 2026): repo initialized, Convex project provisioned, hello-world shell live on convex.site. Next: the public recall board.
+Live and end to end (Sep 14, 2026): a public recall board fed by CPSC, FDA and USDA-FSIS crons; email sign-in; receipts in by photo (iPhone HEIC included), pasted text, typed-in items, or forwarded email; pharmacy receipts read down to the NDC; matches against the corpus with alerts; Firecrawl-read remedy checklists; drafted claims that send on approval and thread the manufacturer's reply back. The dated build log with measurements and review findings is [hackathon.md](./hackathon.md).
