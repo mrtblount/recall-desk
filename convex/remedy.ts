@@ -13,7 +13,7 @@ import {
 import { BudgetHaltError, callStructured, TerminalExtractionError } from "./ai";
 import { sha256Hex } from "./crawl/cpsc";
 import { looksLikeBotWall, sanitizeClaimEmail, sanitizeClaimUrl } from "./remedySanitize";
-import { llmPool } from "./pools";
+import { crawlPool, llmPool } from "./pools";
 import schema from "./schema";
 
 const firecrawl = new FirecrawlClient(components.firecrawl);
@@ -288,7 +288,6 @@ export const backfillRemedyPages = internalAction({
       internal.remedy.matchedRecallIdsMissingPages,
       {},
     );
-    const { crawlPool } = await import("./pools");
     for (const recallId of recallIds) {
       await crawlPool.enqueueAction(ctx, internal.remedy.scrapeRemedyPage, { recallId });
     }

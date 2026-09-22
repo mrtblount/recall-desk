@@ -15,6 +15,7 @@ import { sendGuarded } from "./mail";
 import { CANDIDATE_MIN_SCORE, itemRecallScore } from "./matchScore";
 import { extractNdcs, ndcKey } from "./ndc";
 import { crawlPool, llmPool } from "./pools";
+import { needsRemedyScrape } from "./remedy";
 import schema from "./schema";
 
 const MAX_CANDIDATES = 6;
@@ -599,7 +600,6 @@ export const recordMatches = internalMutation({
         .query("remedyPages")
         .withIndex("by_recallId", (q) => q.eq("recallId", match.recallId))
         .unique();
-      const { needsRemedyScrape } = await import("./remedy");
       if (needsRemedyScrape(page, recall, Date.now())) {
         await crawlPool.enqueueAction(ctx, internal.remedy.scrapeRemedyPage, {
           recallId: match.recallId,
