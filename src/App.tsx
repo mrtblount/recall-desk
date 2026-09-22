@@ -168,7 +168,7 @@ function SignInForms() {
     }
   };
   return step === "email" ? (
-    <form onSubmit={sendCode}>
+    <form key="email-step" onSubmit={sendCode}>
       <p>Enter your email and we'll send an 8-digit sign-in code. No passwords.</p>
       <div className="search-row" style={{ marginTop: 14 }}>
         <div className="search-box">
@@ -185,7 +185,7 @@ function SignInForms() {
       <p className="dialog-muted">Sign-in codes are delivered by email; your address is used for sign-in and recall alerts, nothing else.</p>
     </form>
   ) : (
-    <form onSubmit={verifyCode}>
+    <form key="code-step" onSubmit={verifyCode}>
       <p>We sent an 8-digit code to <strong>{email}</strong>. Enter it below.</p>
       <div className="search-row" style={{ marginTop: 14 }}>
         <div className="search-box">
