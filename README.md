@@ -1,6 +1,6 @@
 # Recall Desk
 
-**Forward your receipts once.** Recall Desk watches every federal recall feed (CPSC, FDA, FSIS, NHTSA) against what you actually own, tells you the day something you have is recalled, and files the claim for you.
+**Forward your receipts once.** Recall Desk watches the federal recall feeds (CPSC, FDA, USDA-FSIS) against what you actually own, tells you the day something you have is recalled, and files the claim for you.
 
 Built solo for the [Convex All Gas Hackathon](https://www.convex.dev/hackathons/all-gas), Aug 25 – Sep 22, 2026. Every line of code in this repo was written for this hackathon, starting Aug 30, 2026.
 

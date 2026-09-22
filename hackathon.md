@@ -2,7 +2,7 @@
 
 - **Project:** Recall Desk
 - **Event:** Convex All Gas Hackathon
-- **What it does:** Watches the federal recall feeds (CPSC, FDA, FSIS, NHTSA) against the retailer receipts you forward by email, alerts you the day something you own is recalled, and files the claim with the manufacturer for you.
+- **What it does:** Watches the federal recall feeds (CPSC, FDA, USDA-FSIS) against the retailer receipts you forward by email, alerts you the day something you own is recalled, and files the claim with the manufacturer for you.
 - **Live app:** https://tremendous-bullfrog-311.convex.site
 - **Repo:** https://github.com/mrtblount/recall-desk
 - **Frontend:** Convex static hosting
@@ -12,11 +12,11 @@
 - **Auth:** Convex Auth
 - **AI models:** gpt-5.6-luna (receipt extraction incl. vision, match adjudication, remedy extraction, claim drafting; terra staged for escalation)
 - **Started:** 2026-08-30T06:30:40Z
-- **Last updated:** 2026-09-14T18:45:00Z
+- **Last updated:** 2026-09-22T05:40:00Z
 
 ## What this is
 
-Recall Desk is a single-purpose everyday app: **forward your receipts once, and never miss a recall on something you own.** Two lanes share one corpus. The public lane crawls CPSC, FDA, FSIS and NHTSA recall feeds on Convex crons, tracks changes, and renders a live board anyone can open with no account — today's recalls, an "expanded" badge when a recall grows, a stats ticker. The personal lane gives each user a dedicated AgentMail ingest address; forwarded retailer receipts are parsed by OpenAI into inventory items, a matcher watches that inventory against the corpus, and a match triggers an alert, a Firecrawl scrape of the manufacturer's remedy page, extraction of the actual claim procedure, a prefilled claim draft, and — on approval — a real outbound claim email whose replies thread back onto the claim timeline. All state, scheduling and reactivity live in Convex; there is no other server or database.
+Recall Desk is a single-purpose everyday app: **forward your receipts once, and never miss a recall on something you own.** Two lanes share one corpus. The public lane crawls the CPSC, FDA and USDA-FSIS recall feeds on Convex crons (NHTSA is scaffolded in the schema and UI labels but not crawled; it was the M11 buffer item and stayed below the line), tracks changes, and renders a live board anyone can open with no account — today's recalls, an "expanded" badge when a recall grows, a stats ticker. The personal lane gives each user a dedicated AgentMail ingest address; forwarded retailer receipts are parsed by OpenAI into inventory items, a matcher watches that inventory against the corpus, and a match triggers an alert, a Firecrawl scrape of the manufacturer's remedy page, extraction of the actual claim procedure, a prefilled claim draft, and — on approval — a real outbound claim email whose replies thread back onto the claim timeline. All state, scheduling and reactivity live in Convex; there is no other server or database.
 
 - **Demo video:** not recorded yet (placeholder until the final week)
 - **Stack:** Convex (database, queries, actions, crons, workpool, static hosting) · Firecrawl (recall feeds + remedy portals) · AgentMail (receipts in, claims out, replies back) · OpenAI (receipt extraction, remedy-procedure extraction, match adjudication, claim drafting) · Vite + React + TypeScript
@@ -39,6 +39,142 @@ Secrets live in `.env.local` (gitignored) and in Convex environment variables (`
 - **Firecrawl.** No crawl, no corpus and no remedy procedures. Two measurements taken while planning (2026-08-30) drove the design: (a) the Louisville Ladder remedy portal at atticstairwayrecall.expertinquiry.com returns only "You need to enable JavaScript to run this app" to plain HTTP but renders fully under Firecrawl, including the registration form's required fields; (b) the Casely recall page measures 108,913 characters raw vs 22,388 with `onlyMainContent`, a 5x strip of storefront chrome with zero loss of claim-critical fields (model E33A, JotForm claim link, photo instructions, gift card option, the recall contact inbox).
 - **AgentMail.** Email is the product's interface. Ingestion is inbound mail. Claims are outbound mail. Manufacturer replies are inbound mail that advances state. Remove it and nothing enters or leaves.
 - **OpenAI.** Four generation jobs: receipt-to-items extraction, remedy-page-to-procedure extraction, match adjudication, claim drafting. Remove it and nothing parses.
+
+## Architecture
+
+One Convex deployment holds every table, every scheduled job, the HTTP surface (auth discovery, webhooks, the static site) and the reactive queries the SPA subscribes to. Firecrawl, AgentMail and OpenAI are called from actions; nothing else runs anywhere.
+
+```mermaid
+flowchart LR
+  subgraph feeds["Federal recall feeds"]
+    CPSC["CPSC SaferProducts JSON"]
+    FDA["openFDA enforcement"]
+    FSIS["USDA-FSIS API"]
+  end
+
+  subgraph convex["Convex deployment — tremendous-bullfrog-311"]
+    CRON["crons.ts<br/>crawl every 2 h · retry sweeps 30 m / 6 h<br/>claim recovery 15 m · upload GC 1 h"]
+    FEEDS["crawl/feeds.ts<br/>feedSources registry · hash-diff upsert"]
+    DETAIL["crawl/detail.ts<br/>remedy-URL extraction (≤300/run)"]
+    CORPUS[("recalls · recallRevisions<br/>recallUpcs · publicStats")]
+    HTTP["http.ts<br/>/.well-known (auth) · /agentmail/webhook<br/>/firecrawl/ · static site catch-all"]
+    EMAIL["email.ts<br/>route by +tag · emailsProcessed ledger"]
+    RECEIPTS["receipts.ts<br/>photo / paste / typed intake · daily cap"]
+    AI["ai.ts callStructured<br/>budget guard · llmUsage ledger<br/>strict JSON schemas"]
+    LANEB[("users · items")]
+    MATCH["match.ts<br/>search + UPC/NDC prefilter (≤6)<br/>→ one adjudication"]
+    MATCHES[("matches")]
+    REMEDY["remedy.ts<br/>scrape (waitFor 3 s) → extract<br/>→ grounded CTA sanitizer"]
+    REMEDYP[("remedyPages")]
+    CLAIMS["claims.ts<br/>draft → edit → approve → send"]
+    CLAIMSDB[("claims · claimEvents")]
+    MAIL["mail.ts<br/>ALLOWED_RECIPIENTS guard"]
+    POOLS["workpools<br/>crawlPool ×2 · llmPool ×3"]
+  end
+
+  FC{{"Firecrawl"}}
+  AM{{"AgentMail"}}
+  OAI{{"OpenAI gpt-5.6-luna"}}
+  UI["Vite + React SPA<br/>useQuery · usePaginatedQuery"]
+
+  CRON --> FEEDS
+  CPSC --> FEEDS
+  FDA --> FEEDS
+  FSIS -. "403 to datacenters" .-> FC --> FEEDS
+  FEEDS --> CORPUS
+  FEEDS -- "changed rows" --> POOLS --> DETAIL --> FC
+  DETAIL --> CORPUS
+  AM -- "inbound webhook" --> HTTP --> EMAIL
+  EMAIL --> POOLS --> AI --> OAI
+  RECEIPTS --> AI
+  AI --> LANEB
+  LANEB -- "new item" --> MATCH
+  CORPUS -- "changed recall sweep" --> MATCH
+  MATCH --> AI
+  MATCH --> MATCHES
+  MATCHES -- "on match" --> REMEDY --> FC
+  REMEDY --> AI
+  REMEDY --> REMEDYP
+  MATCHES -- "alert" --> MAIL
+  MATCHES --> CLAIMS --> AI
+  CLAIMS --> CLAIMSDB
+  CLAIMS -- "approved" --> MAIL --> AM
+  AM -- "reply on thread" --> HTTP
+  HTTP -- "SPA + assets" --> UI
+  CORPUS & LANEB & MATCHES & REMEDYP & CLAIMSDB -- "reactive queries" --> UI
+```
+
+**The four Convex ideas the design leans on.**
+
+1. **Transactions carry the side effects.** Every hash write that marks a recall as changed enqueues its Firecrawl detail scrape in the same mutation; every match insert schedules its remedy scrape and alert in the same transaction; every `llmUsage` row updates the budget singleton in the same mutation. Nothing can be half-done.
+2. **Idempotency is a table, not a hope.** `[source, sourceId]` for recalls, `messageId` for inbound mail, `[itemId, recallId]` for matches, `threadId` for replies, `contentHash` guards on every extraction save. Any cron can be killed and re-run.
+3. **Stranded states recover by cron, never by hand.** Budget-halted extractions, unsent alerts, sweep-capped recalls, claims stuck in `approved`, and orphaned photo uploads each have a sweep that re-drives them.
+4. **The board never counts.** `publicStats` is maintained in the writing mutation; `lastSeenAt` is touched at most every 12 hours so a 1,600-row crawl does not re-push every open subscription.
+
+**Module map**
+
+| Area | Files | What lives there |
+|---|---|---|
+| Corpus crawl | `convex/crawl/feeds.ts`, `cpsc.ts`, `fda.ts`, `fsis.ts`, `detail.ts`, `extract.ts`, `mappers` | registry-driven feed runs, source mappers, idempotent upsert, revision archiving, Firecrawl detail scrapes, remedy-URL extraction |
+| Corpus queries | `convex/recalls.ts` | `recentRecalls` (paginated), `searchRecalls` (full-text), `stats`, UPC/NDC lookup sync |
+| Auth + identity | `convex/auth.ts`, `users.ts`, `tags.ts` | Convex Auth v1 email OTP via AgentMail, immutable per-user ingest tag |
+| Intake | `convex/email.ts`, `receipts.ts`, `emailParse.ts`, `imageSniff.ts`, `intakeCap.ts`, `src/lib/imagePrep.ts` | webhook routing, raw persistence, photo/paste/typed intake, HEIC→JPEG in the browser, per-user daily cap |
+| LLM wrapper | `convex/ai.ts` | one `callStructured` for all four jobs: budget guard, retry policy, token ledger, list-price cost table |
+| Matching | `convex/match.ts`, `matchScore.ts`, `gtin.ts`, `ndc.ts`, `recallCodes.ts` | prefilter scoring, UPC check digits, NDC normalization, code mining from recall text, adjudication, alert, sweeps |
+| Remedy | `convex/remedy.ts`, `remedySanitize.ts`, `src/lib/prefill.ts` | portal scrape, procedure extraction, grounded link sanitizer, bot-wall detection, receipt-driven prefill |
+| Claims | `convex/claims.ts`, `mail.ts` | drafting, edit lock, atomic send slot, allowlist guard, delivery + reply timeline, recovery cron |
+| Surface | `convex/http.ts`, `crons.ts`, `pools.ts`, `convex.config.ts`, `src/App.tsx` | routes, schedules, workpools, component registration, the SPA |
+
+12,817 lines across `src/` and `convex/` (generated code excluded), 15 test files, 84 tests, all written since 2026-08-30.
+
+## Firecrawl proofs, measured
+
+Three places where the corpus or the claim flow does not exist without Firecrawl, each measured against the plain-HTTP alternative.
+
+| Proof | Plain HTTP | Through Firecrawl | Where it runs |
+|---|---|---|---|
+| **Louisville Ladder attic-stairway portal** (atticstairwayrecall.expertinquiry.com), reproduced 2026-09-09 through the production `remedy.ts` code path | **57 characters**: "You need to enable JavaScript to run this app" | **2,501 characters** of rendered form, from which the extractor structured **4 steps and 8 required fields** | remedy scrape on match, `waitFor: 3000` |
+| **Casely Power Pod E33A recall page**, measured 2026-08-30 | **108,913 characters** of storefront chrome plus notice | **22,388 characters** with `onlyMainContent` (a 4.9× strip) with zero loss of the claim-critical fields: model E33A, the JotForm claim link, photo instructions, the gift-card option, the recall contact inbox | remedy scrape, default `onlyMainContent` |
+| **USDA-FSIS recall API**, discovered 2026-09-07 | **HTTP 403** from the Convex deployment, even with a browser User-Agent (bot wall on datacenter clients) | **1,235 records parsed on the first run**; the FSIS lane fetches the government API *through* Firecrawl every 6 hours | `crawl/fsis.ts`, registry cadence 360 min |
+
+Operational notes that came out of running it, not reading about it: the free tier allows two concurrent browsers and returned 429 at 26 requests/min, so `crawlPool` paces at 2; `maxAge` defaults to two days and cached hits still bill, so every change-triggered re-scrape sets `maxAge: 0` while one-off enrichment keeps the cache; Cloudflare challenge pages are detected and never saved, because one would otherwise mark a portal unreadable forever.
+
+## LLM cost table
+
+All OpenAI calls go through `ai.ts callStructured`: strict JSON schema, one retry on a malformed *completed* response, one retry with doubled output budget on truncation, then flagged for human review. The guard halts at **$5/day and $70 total** (code), under the hackathon's $75 hard ceiling, and every call books `inputTokens`, `outputTokens` and `costUsd` in the same mutation that updates the budget singleton.
+
+Ledger as of 2026-09-22 (dev deployment, where every receipt, match and claim in this log ran; the production ledger is empty, see the next section):
+
+| Purpose | Model | Calls | Input tokens | Output tokens | Booked cost | Per call |
+|---|---|---|---|---|---|---|
+| Receipt extraction (email, paste, typed) | gpt-5.6-luna | 4 | 1,592 | 611 | $0.0005 | $0.00013 |
+| Receipt photo (vision, `detail: "original"`) | gpt-5.6-luna | 6 | 47,076 | 2,405 | $0.0074 | $0.0012 |
+| Match adjudication | gpt-5.6-luna | 12 | 3,951 | 1,758 | $0.0019 | $0.00016 |
+| Remedy-procedure extraction | gpt-5.6-luna | 7 | 13,423 | 3,714 | $0.0043 | $0.0006 |
+| Claim drafting | gpt-5.6-luna | 1 | 381 | 400 | $0.0003 | $0.0003 |
+| **Total** | | **30** | **66,423** | **8,888** | **$0.0144** | |
+
+Pricing in the ledger is list price, re-verified 2026-09-14 at developers.openai.com/api/docs/pricing: luna $0.20 in / $1.20 out per 1M tokens, terra $2.00 / $12.00 (staged for escalation, never yet invoked). Rows booked before 2026-09-14 (about $0.005 of the total) were priced at a stale half-price table, so true spend to date is closer to **$0.019**. A full loop for one item, from a photographed receipt through adjudication, remedy extraction and a drafted claim, costs about **$0.002 to $0.003**; the $70 guard covers roughly 25,000 of them. Vision dominates: one 1536×2048 receipt photo is ~3.7k input tokens at original detail, deliberately chosen because the vision guide recommends it for OCR and the extractor reads model numbers and NDCs off the image.
+
+## Production state as of 2026-09-22
+
+Read from the production deployment at 05:20 UTC, about seven hours before the submission deadline.
+
+**Corpus (Lane A), live and self-updating.**
+
+| Source | Active | Expanded | Closed | Total |
+|---|---|---|---|---|
+| CPSC | 217 | 2 | 0 | 219 |
+| FDA | 124 | 0 | 52 | 176 |
+| USDA-FSIS | 179 | 1 | 1,056 | 1,236 |
+| **All** | **520** | **3** | **1,108** | **1,631** |
+
+140 revision rows archive superseded versions of changed recalls. 164 recalls have been detail-scraped through Firecrawl and 85 carry an extracted manufacturer remedy URL. 159 UPC/NDC lookup keys cover the recalls that print codes. The crawl cron last ran CPSC at 04:22 UTC today and FDA/FSIS at 00:22 UTC, on cadence; the newest recall in the corpus was published 2026-09-17, which is the agencies' own publication lag, not ours.
+
+**Personal lane (Lane B) on production: configured, deployed, never exercised.** Every key is set on production (OpenAI, Firecrawl, AgentMail, the outbound allowlist), the same code is deployed, and two accounts exist. But the production tables hold 0 items, 0 matches, 0 claims and 0 LLM calls; the two inbound emails production has ever received (2026-09-09) were correctly logged as unroutable because they carried no user tag, and created nothing. Every measurement in this log's M6 through M9b entries (receipt to items in 25 s, item to match in 5 s, claim to threaded reply in 37 s, HEIC and pharmacy receipts) was taken on the dev deployment (21 items, 5 matches, 3 remedy pages, 1 claim with 7 timeline events there). The M10 gate as written in the plan, the full loop on the production URL, is therefore still open and is the first thing to do before recording.
+
+**Guards, verified in place:** outbound allowlist restricted to owner-controlled addresses on both deployments; `OTP_DEV_FALLBACK` set only on dev; detail scrapes capped at 300 per run; Firecrawl parallelism 2, LLM parallelism 3; per-user intake cap of 20 receipts/day; budget guard at $5/day and $70 total; no `.env` file tracked, secrets only in Convex env.
+
 
 ## Log
 
@@ -135,3 +271,12 @@ Tony tried the upload with what real people have — an iPhone photo of a Home D
 **Cost table correction.** OpenAI's pricing page today lists gpt-5.6-luna at $0.20 in / $1.20 out per 1M tokens (terra $2.00 / $12.00); the table verified on 09-09 carried half those numbers, so the ledger under-counted early spend 2× (total to date is still about a cent). The guard now bills at list price and the note stays here so the hard ceiling is never trusted to a stale table again. Image inputs use `detail: "original"` per the vision guide's OCR recommendation (~3.7k tokens for a 1536×2048 receipt).
 
 Verification: 84 tests green across 15 files (new: image sniffing, NDC normalization and mining, GTIN check digits, manual items and the shared daily cap, recallUpcs sync/backfill, sweep side doors); typecheck, lint and production build clean; the full path exercised in a real browser against the dev deployment at desktop and phone widths (no horizontal scroll at 390 px), then deployed to production with a paginated backfill that added 63 NDC/UPC lookup keys to the live corpus.
+
+### 2026-09-22 - (deadline day, deep pass)
+Eight days of silence in the repo, then a status check at 01:15 Eastern found the 09-14 log entry and README status still uncommitted; they are now committed and pushed (cf705b9). This session is the M16 documentation pass, done late and honestly: an **Architecture** section with the system diagram and the four Convex ideas the design leans on (transactional side effects, idempotency as tables, cron-driven recovery, no-count stats), a **module map**, the three **Firecrawl proofs** with their measured numbers in one table (Louisville 57 → 2,501 chars, Casely 108,913 → 22,388, FSIS 403 → 1,235 records), the **LLM cost table** aggregated from the real ledger (30 calls, 66,423 input / 8,888 output tokens, $0.0144 booked, about $0.019 at true list price), and a **production snapshot** read directly from the prod deployment.
+
+Two corrections came out of reading the numbers instead of the memory of them. (1) The header and README said the app watches NHTSA; it does not. NHTSA exists as a source literal and a UI label, and was the M11 buffer item that never came above the line. The copy now says CPSC, FDA and USDA-FSIS, which is what the crons run. (2) **Lane B has never run on production.** Every key is set there, the code is deployed, the corpus is live (1,631 recalls, crons on cadence as of 04:22 UTC today), but the production tables hold 0 items, 0 matches, 0 claims and 0 LLM calls. Every receipt-to-claim measurement in this log came from the dev deployment. That is not a bug in the product, but it means the M10 gate as the plan defines it (the full loop on the production URL, no backend touching) is still open, and the log now says so rather than implying otherwise.
+
+Verified this session: 84 tests green across 15 files; production site returns 200; production env carries every required key and only dev carries the OTP fallback flag.
+
+Next, in order, with about seven hours to the 12:00 PT deadline: run the Lane B loop once on production as a signed-in user (receipt photo → items → match → remedy checklist → drafted claim), record it, and log the timings; then the demo video, the launch post, and the vibeapps.dev submission. No code changes are planned before submission unless the production run surfaces one.
