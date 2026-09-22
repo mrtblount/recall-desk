@@ -6,7 +6,7 @@ Built solo for the [Convex All Gas Hackathon](https://www.convex.dev/hackathons/
 
 - **Live:** https://tremendous-bullfrog-311.convex.site
 - **Build log:** [hackathon.md](./hackathon.md)
-- **Demo video:** _coming Sep 17_
+- **Demo video:** https://tremendous-bullfrog-311.convex.cloud/api/storage/d69bb6e6-5258-4a13-b609-7812cd8bf50f (2:45, narrated screen capture of the production site, recorded Sep 22; also at https://tremendous-bullfrog-311.convex.site/demo.mp4)
 
 ## Stack
 

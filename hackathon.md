@@ -12,13 +12,13 @@
 - **Auth:** Convex Auth
 - **AI models:** gpt-5.6-luna (receipt extraction incl. vision, match adjudication, remedy extraction, claim drafting; terra staged for escalation)
 - **Started:** 2026-08-30T06:30:40Z
-- **Last updated:** 2026-09-22T16:40:00Z
+- **Last updated:** 2026-09-22T17:20:00Z
 
 ## What this is
 
 Recall Desk is a single-purpose everyday app: **forward your receipts once, and never miss a recall on something you own.** Two lanes share one corpus. The public lane crawls the CPSC, FDA and USDA-FSIS recall feeds on Convex crons (NHTSA is scaffolded in the schema and UI labels but not crawled; it was the M11 buffer item and stayed below the line), tracks changes, and renders a live board anyone can open with no account — today's recalls, an "expanded" badge when a recall grows, a stats ticker. The personal lane gives each user a dedicated AgentMail ingest address; forwarded retailer receipts are parsed by OpenAI into inventory items, a matcher watches that inventory against the corpus, and a match triggers an alert, a Firecrawl scrape of the manufacturer's remedy page, extraction of the actual claim procedure, a prefilled claim draft, and — on approval — a real outbound claim email whose replies thread back onto the claim timeline. All state, scheduling and reactivity live in Convex; there is no other server or database.
 
-- **Demo video:** not recorded yet (placeholder until the final week)
+- **Demo video:** https://tremendous-bullfrog-311.convex.cloud/api/storage/d69bb6e6-5258-4a13-b609-7812cd8bf50f (2:45, narrated screen capture of the production site; download copy at https://tremendous-bullfrog-311.convex.site/demo.mp4)
 - **Stack:** Convex (database, queries, actions, crons, workpool, static hosting) · Firecrawl (recall feeds + remedy portals) · AgentMail (receipts in, claims out, replies back) · OpenAI (receipt extraction, remedy-procedure extraction, match adjudication, claim drafting) · Vite + React + TypeScript
 - **Built by:** Tony Blount, solo, with Claude Code as the coding agent. Every line in this repo was written for this hackathon, starting 2026-08-30.
 
@@ -288,3 +288,8 @@ Also this session: the M16 deep-pass sections above (architecture, module map, F
 
 ### 2026-09-22 - e5fb6fb (sign-ups open, capped at 1,000)
 Tony's call after the cost review: anyone can sign up, limited to 1,000 accounts for now. The outbound allowlist had gated the sign-in code itself, so until this commit no address but his could create an account. Now the OTP and recall alerts go to the address that asked for them (`sendToAccountOwner`), claim emails to manufacturers still pass the allowlist (`sendGuarded`), and the 1,001st new account is refused inside the same transaction that would create it, with a message the sign-in form shows ("Recall Desk is full for now"). Verified on production in a fresh browser: a never-seen address requested a code at 16:35:02 UTC, received it by AgentMail, and was signed in with its own ingest tag at 16:35:34. Open question logged for the post-deadline pass: AgentMail's free plan allows 100 emails a day across sends and receives, so a launch day needs the Developer plan before the 100th sign-in.
+
+### 2026-09-22 - demo video, recorded against production
+The demo is a 2:45 narrated screen capture of the live site, produced by a Playwright script driving a fresh Chromium against production with video recording on: intro card, the public board and full-text search, the Louisville Ladder detail, a **brand-new account signing in live** (the code delivered by AgentMail and read back over its API mid-recording), the Home Depot iPhone HEIC photographed receipt becoming three items, the seeded Amazon receipt **emailed to the new account's alias while the desk was on screen** (items landed 7 s after the send, both recall matches 3 s after that, no refresh), the Skip Hop remedy checklist rendered from the Firecrawl-scraped portal, and the drafted claim. Narration is ten short clips from Higgsfield's Seed Audio voice, mixed onto the recording at the script's own segment marks; title cards use the site's fonts and palette. No footage is generated or staged: every frame is the production deployment doing the work, as the judging rules ask.
+
+Recording it found one more real bug: the sign-in form reused the same input across the email and code steps, so the 8-digit code box came prefilled with the address and the browser rejected the pattern for every new user. Fixed with a remount key (commit on main), deployed, and the recorded sign-in is the fixed flow. The static-hosting uploader has a fixed MIME list and served the .mp4 as an octet stream, so the video also lives in Convex file storage with an explicit video/mp4 type (`convex/demo.ts`), which is the link above. The demo account (recalldesk-demo@agentmail.to) and its items and matches remain on production for judges who want to see a populated desk; sign-ups are open to anyone up to 1,000 accounts.
