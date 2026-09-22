@@ -146,8 +146,8 @@ function SignInForms() {
       setEmail(normalized);
       await signIn("recall-otp", { email: normalized });
       setStep("code");
-    } catch {
-      setError("We couldn't send a code right now — email delivery may still be connecting. Check the address and try again soon.");
+    } catch (error) {
+      setError(userMessage(error, "We couldn't send a code right now. Check the address and try again in a moment."));
     } finally {
       setBusy(false);
     }
@@ -208,8 +208,8 @@ function SignInForms() {
             try {
               await signIn("recall-otp", { email });
               setNotice("Code re-sent — check your inbox.");
-            } catch {
-              setError("Couldn't resend right now. Wait a moment and try again.");
+            } catch (error) {
+              setError(userMessage(error, "Couldn't resend right now. Wait a moment and try again."));
             } finally {
               setBusy(false);
             }

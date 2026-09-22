@@ -4,11 +4,15 @@ import { env, internalAction } from "./_generated/server";
 const API_BASE = "https://api.agentmail.to/v0";
 
 /**
- * HARD CONSTRAINT (#6, hackathon brief): every outbound send checks the
+ * Third-party sends (claim emails to manufacturers) check the
  * ALLOWED_RECIPIENTS env allowlist — comma-separated exact addresses plus
  * `@domain` suffix entries — which contains only Tony-controlled addresses.
  * Only Tony widens it, by changing the env var himself. Never bypass or
  * weaken this to make a test pass.
+ *
+ * Since 2026-09-22 (Tony's decision: open sign-ups, capped at SIGNUP_CAP
+ * accounts) mail addressed to the account's OWN address — sign-in codes and
+ * recall alerts — is not allowlisted: the recipient asked for it.
  */
 export function assertAllowedRecipient(email: string): void {
   const raw = env.ALLOWED_RECIPIENTS ?? "";
@@ -73,15 +77,30 @@ export const provisionSharedInbox = internalAction({
   },
 });
 
-/** Allowlist-guarded send. EVERY outbound path goes through here. */
-export async function sendGuarded(args: {
+type SendArgs = {
   inboxId: string;
   to: string;
   subject: string;
   text: string;
   replyTo?: string;
-}): Promise<{ messageId: string; threadId: string }> {
+};
+
+/** Allowlist-guarded send for THIRD-PARTY recipients (claims to
+ * manufacturers). Every outbound path that is not to the account owner
+ * goes through here. */
+export async function sendGuarded(args: SendArgs): Promise<{ messageId: string; threadId: string }> {
   assertAllowedRecipient(args.to);
+  return rawSend(args);
+}
+
+/** Send to the signed-in account's own address (sign-in codes, recall
+ * alerts). Open to any address by design — never use this for a recipient
+ * the user typed in. */
+export async function sendToAccountOwner(args: SendArgs): Promise<{ messageId: string; threadId: string }> {
+  return rawSend(args);
+}
+
+async function rawSend(args: SendArgs): Promise<{ messageId: string; threadId: string }> {
   const res = await fetch(
     `${API_BASE}/inboxes/${encodeURIComponent(args.inboxId)}/messages/send`,
     {

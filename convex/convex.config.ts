@@ -22,8 +22,9 @@ const app = defineApp({
     /** "1" ONLY on dev deployments: log OTP codes instead of failing when
      * the mailer is unconfigured. Never set on prod. */
     OTP_DEV_FALLBACK: v.optional(v.string()),
-    /** Hackathon hard constraint #6: comma-separated Tony-controlled
-     * addresses (exact) and @domain suffixes. Every outbound send checks it.
+    /** Comma-separated Tony-controlled addresses (exact) and @domain
+     * suffixes. Every THIRD-PARTY send (claim emails) checks it; sign-in
+     * codes and alerts to the account's own address do not (2026-09-22).
      * Only Tony widens it. */
     ALLOWED_RECIPIENTS: v.optional(v.string()),
     OPENAI_API_KEY: v.optional(v.string()),

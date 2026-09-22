@@ -11,7 +11,7 @@ import {
   query,
 } from "./_generated/server";
 import { BudgetHaltError, callStructured, TerminalExtractionError } from "./ai";
-import { sendGuarded } from "./mail";
+import { sendToAccountOwner } from "./mail";
 import { CANDIDATE_MIN_SCORE, itemRecallScore } from "./matchScore";
 import { extractNdcs, ndcKey } from "./ndc";
 import { crawlPool, llmPool } from "./pools";
@@ -348,7 +348,7 @@ async function sendAlertsForMatches(
     await ctx.runMutation(internal.match.markNotifyAttempted, {
       matchIds: toSend.map((c) => c.matchId),
     });
-    await sendGuarded({
+    await sendToAccountOwner({
       inboxId,
       to: userEmail,
       subject: `Recall match: ${product.slice(0, 80)}`,

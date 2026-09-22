@@ -1,8 +1,16 @@
 import { Email } from "@convex-dev/auth/providers/Email";
 import { convexAuth } from "@convex-dev/auth/server";
+import { ConvexError } from "convex/values";
 import { env, type MutationCtx } from "./_generated/server";
-import { assertAllowedRecipient } from "./mail";
 import { userTagFromSeed } from "./tags";
+
+/** Open sign-ups are capped here (Tony, 2026-09-22). The 1,001st new
+ * account is refused inside the same transaction that would create it, so
+ * no orphan user row or ingest alias is left behind. Existing accounts are
+ * never affected. */
+export const SIGNUP_CAP = 1000;
+export const SIGNUP_FULL_MESSAGE =
+  "Recall Desk is full for now — the first 1,000 seats are taken. Check back soon.";
 
 /**
  * Email OTP over AgentMail's REST API (email is this product's interface —
@@ -38,10 +46,9 @@ export const recallOtp = Email({
       // Fail honest: never let the UI claim "code sent" when nothing was.
       throw new Error("sign-in email delivery is not configured yet");
     }
-    // Hard constraint #6: no outbound mail to non-Tony addresses until the
-    // allowlist is deliberately widened. Sign-ups for other addresses fail
-    // with the honest "couldn't send" path.
-    assertAllowedRecipient(email);
+    // Sign-in codes go to the address that asked for them: open to anyone
+    // since 2026-09-22 (Tony's call). Third-party sends stay allowlisted in
+    // mail.ts; the account count is capped in afterUserCreatedOrUpdated.
     const res = await fetch(
       `https://api.agentmail.to/v0/inboxes/${encodeURIComponent(inboxId)}/messages/send`,
       {
@@ -75,6 +82,12 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
       const ctx = authCtx as unknown as MutationCtx;
       const user = await ctx.db.get("users", userId);
       if (user === null || user.userTag !== undefined) return;
+      // New account: enforce the cap. This row was inserted moments ago in
+      // this same transaction, so it is already in the count.
+      const seated = await ctx.db.query("users").take(SIGNUP_CAP + 1);
+      if (seated.length > SIGNUP_CAP) {
+        throw new ConvexError(SIGNUP_FULL_MESSAGE);
+      }
       for (let bump = 0; bump < 10; bump++) {
         const tag = userTagFromSeed(`${userId}:${bump}`);
         const taken = await ctx.db
